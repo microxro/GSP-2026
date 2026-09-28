@@ -141,9 +141,11 @@ def to_db(x):
 
 
 def analyze(samples, rate):
+    if samples.size == 0:                          # empty recording -> treat as silence
+        samples = np.zeros(2)
     samples = samples - np.mean(samples)          # remove DC offset
     rms = np.sqrt(np.mean(samples ** 2))
-    peak = np.max(np.abs(samples)) if samples.size else 0.0
+    peak = np.max(np.abs(samples))
     rms_db = to_db(rms)
     peak_db = to_db(peak)
 

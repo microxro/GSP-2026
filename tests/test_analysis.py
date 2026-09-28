@@ -375,21 +375,10 @@ class AnalyzeEdgeInputTests(unittest.TestCase):
         self.assertEqual(r["dominant"], 0.0)
 
 
-class AnalyzeEmptyInputDefectTest(unittest.TestCase):
-    @unittest.expectedFailure
+class AnalyzeEmptyInputTest(unittest.TestCase):
     def test_empty_input_should_not_crash(self):
-        # DEFECT: analyze(np.array([]), rate) raises
-        #   ValueError: Invalid number of FFT data points (0) specified.
-        # from `np.fft.rfft(samples * np.hanning(len(samples)))` in analyze().
-        # A 0-frame WAV (empty/truncated recording) reaches this via
-        # load_wav() -> analyze() with no guard, including through the
-        # --file CLI path, so it's a reachable real-world crash, not just
-        # a synthetic edge case.
-        # Proposed one-line fix: at the top of analyze(), add
-        #   if samples.size == 0: samples = np.zeros(2)
-        # (or an early return of the same all-silent/zero result dict that
-        # the existing zero-energy branch already produces), so a 0-length
-        # recording degrades to "silent" instead of raising.
+        # A 0-frame WAV (empty/truncated recording) must degrade to "silent"
+        # instead of raising from the FFT.
         empty = np.array([], dtype=np.float64)
         result = ra.analyze(empty, 16000)  # should not raise
         self.assertTrue(result["silent"])
