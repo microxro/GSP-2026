@@ -89,6 +89,7 @@ for g in gpio spi i2c; do
     fi
 done
 
+# shellcheck disable=SC2329  # invoked via trap
 cleanup() {
     userdel "$TEST_USER" >/dev/null 2>&1
     for g in "${CREATED_GROUPS[@]}"; do
@@ -328,14 +329,29 @@ assert_contains "$wrap_out" "ARG:[--ping]" "C11: wrapper still works correctly a
 
 # =========================================================================== #
 echo "--- C12: SUDO_USER unset defaults to pranav; missing user warns without crashing ---"
+# The default itself (works whether or not a real pranav account exists).
+# shellcheck disable=SC2016  # literal text, not an expansion
+assert_contains "$(cat "$INSTALL_SH")" 'TARGET_USER="${SUDO_USER:-pranav}"' "C12: TARGET_USER defaults to pranav"
+if id pranav >/dev/null 2>&1; then
+    # Real account (e.g. on the Pi): don't run the installer against it.
+    echo "SKIP: C12: pranav exists on this machine - not modifying a real account"
+else
+    reset_case_env; reset_log
+    idir="$SANDBOX/c12/opt"; bpath="$SANDBOX/c12/bin/gsp-keystudio"
+    do_run "$PATH_FAKES" "$idir" "$bpath" --no-driver
+    assert_exit_eq "$RC" 0 "C12: succeeds even though default user doesn't exist"
+    assert_contains "$OUT" "Giving pranav access" "C12: defaults target user to pranav when SUDO_USER is unset"
+    assert_contains "$OUT" "User pranav not found" "C12: warns that pranav is missing"
+fi
+# Missing user, with a name that can't exist on any machine.
 reset_case_env; reset_log
-idir="$SANDBOX/c12/opt"; bpath="$SANDBOX/c12/bin/gsp-keystudio"
+export SUDO_USER="gsp_no_such_user_$$"
+idir="$SANDBOX/c12b/opt"; bpath="$SANDBOX/c12b/bin/gsp-keystudio"
 do_run "$PATH_FAKES" "$idir" "$bpath" --no-driver
-assert_exit_eq "$RC" 0 "C12: succeeds even though default user doesn't exist"
-assert_contains "$OUT" "Giving pranav access" "C12: defaults target user to pranav when SUDO_USER is unset"
-assert_contains "$OUT" "User pranav not found" "C12: warns that pranav is missing"
+assert_exit_eq "$RC" 0 "C12: succeeds when the target user doesn't exist"
+assert_contains "$OUT" "User gsp_no_such_user_$$ not found" "C12: warns that the user is missing"
 assert_not_contains "$(cat "$CALL_LOG")" "usermod" "C12: no usermod calls for a nonexistent user"
-if [[ ! -e "/home/pranav" ]]; then pass "C12: real /home/pranav was never touched"; else fail "C12: real /home/pranav was never touched"; fi
+if [[ ! -e "/home/gsp_no_such_user_$$" ]]; then pass "C12: no home dir created for a missing user"; else fail "C12: no home dir created for a missing user"; fi
 
 # =========================================================================== #
 echo "--- C13: raspi-config missing -- warns and continues ---"

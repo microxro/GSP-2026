@@ -340,6 +340,19 @@ class CaptureAndAnalyzeTests(unittest.TestCase):
         self.assertIn("Saved:", out)
         self.assertIn(os.path.join(self.save_dir, files[0]), out)
 
+    def test_two_recordings_in_same_second_both_kept(self):
+        import datetime as real_dt
+        times = iter([real_dt.datetime(2026, 9, 28, 3, 8, 21, 100000),
+                      real_dt.datetime(2026, 9, 28, 3, 8, 21, 600000)])
+        fake_dt = types.SimpleNamespace(
+            datetime=types.SimpleNamespace(now=lambda: next(times)))
+        with mock.patch.object(ra, "datetime", fake_dt):
+            self._capture(keep=True)
+            self._capture(keep=True)
+        self.assertEqual(sorted(os.listdir(self.save_dir)),
+                         ["rec_20260928_030821_100.wav",
+                          "rec_20260928_030821_600.wav"])
+
     def test_keep_false_deletes_wav(self):
         result, leds, out = self._capture(keep=False)
         self.assertEqual(os.listdir(self.save_dir), [])

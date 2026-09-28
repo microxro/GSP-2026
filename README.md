@@ -30,3 +30,10 @@ gsp-keystudio --file x.wav  # analyzes an existing WAV
 Recordings are saved to `/home/pranav/recordings/`. Add `--no-save` to delete each recording after it's analyzed. The script detects the sound card automatically; use `--device plughw:N,0` to override it.
 
 The SPL figure is approximate (`SPL_OFFSET` in the script). To get accurate numbers, calibrate it against a sound meter.
+
+## Testing
+The tests don't need the HAT. They use fake versions of the GPIO pins, the SPI LEDs, `arecord`, `apt-get` and the other system tools, so you can run them on the Pi or on any Linux machine:
+```bash
+python3 -m unittest tests.test_analysis tests.test_hardware   # analysis, button, recording, LEDs, CLI
+sudo bash tests/test_install.sh                               # installer, run in a sandbox
+```

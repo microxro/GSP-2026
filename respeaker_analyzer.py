@@ -246,7 +246,7 @@ def volume_color(idx):
 # --------------------------------------------------------------------------- #
 def capture_and_analyze(device, leds, keep):
     os.makedirs(SAVE_DIR, exist_ok=True)
-    stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]  # ms: no overwrites
     path = os.path.join(SAVE_DIR, f"rec_{stamp}.wav")
 
     leds.show((255, 0, 0))                         # red = recording
