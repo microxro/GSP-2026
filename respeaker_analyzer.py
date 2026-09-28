@@ -159,6 +159,14 @@ def analyze(samples, rate):
     else:
         dominant = centroid = 0.0
 
+    # top 3 distinct peaks (at least 30 Hz apart), strongest first
+    peaks, mag = [], spectrum * audible
+    for i in np.argsort(mag)[::-1]:
+        if mag[i] <= 0 or len(peaks) == 3:
+            break
+        if all(abs(freqs[i] - f) >= 30 for f, _ in peaks):
+            peaks.append((float(freqs[i]), to_db(mag[i] / (mag.max() or 1.0))))
+
     total = power[audible].sum() or 1.0
     bands = {name: float(power[(freqs >= lo) & (freqs < hi)].sum() / total * 100)
              for name, lo, hi in BANDS}
@@ -166,38 +174,63 @@ def analyze(samples, rate):
     f_idx, f_label = rate_level(dominant, FREQ_LEVELS)
     v_idx, v_label = rate_level(rms_db, VOLUME_LEVELS)
     return {
-        "rms_db": rms_db, "peak_db": peak_db, "spl": rms_db + SPL_OFFSET,
-        "dominant": dominant, "centroid": centroid, "bands": bands,
+        "rms_db": rms_db, "peak_db": peak_db, "spl": max(0.0, rms_db + SPL_OFFSET),
+        "dominant": dominant, "centroid": centroid, "bands": bands, "peaks": peaks,
         "freq_idx": f_idx, "freq_label": f_label,
         "vol_idx": v_idx, "vol_label": v_label,
         "silent": rms_db < VOLUME_LEVELS[0][0],
     }
 
 
-def meter(idx, levels, width=21):
-    pos = round(idx / (len(levels) - 1) * (width - 1))
-    return "LOW [" + "".join("#" if i <= pos else "-" for i in range(width)) + "] HIGH"
+def level_range(idx, levels, unit):
+    """Text for the value range of a rating, e.g. '60-250 Hz'."""
+    lo = levels[idx - 1][0] if idx > 0 else None
+    hi = levels[idx][0]
+    if lo is None:
+        return f"below {hi:g} {unit}"
+    if hi == float("inf"):
+        return f"{lo:g} {unit} and above"
+    return f"{lo:g} to {hi:g} {unit}"
+
+
+def meter(fraction, width=30):
+    """Bar positioned by the exact value (0.0 = lowest, 1.0 = highest)."""
+    fraction = min(max(fraction, 0.0), 1.0)
+    pos = round(fraction * (width - 1))
+    bar = "".join("#" if i <= pos else "-" for i in range(width))
+    return f"LOW [{bar}] HIGH  ({fraction * 100:.0f}/100)"
+
+
+def rating_line(idx, label, levels, unit):
+    return f"{label}  (level {idx + 1} of {len(levels)}, {level_range(idx, levels, unit)})"
 
 
 def report(r):
-    print("\n" + "=" * 52)
+    # volume meter: linear over -80..0 dBFS; frequency meter: log over 20..8000 Hz
+    vol_frac = (r["rms_db"] + 80) / 80
+    freq_frac = (np.log10(max(r["dominant"], 20)) - np.log10(20)) / (np.log10(8000) - np.log10(20))
+
+    print("\n" + "=" * 60)
     print(" VOLUME")
     print(f"   RMS level      : {r['rms_db']:7.1f} dBFS")
     print(f"   Peak level     : {r['peak_db']:7.1f} dBFS")
     print(f"   Estimated SPL  : {r['spl']:7.1f} dB (approx.)")
-    print(f"   Rating         : {r['vol_label']}")
-    print(f"   {meter(r['vol_idx'], VOLUME_LEVELS)}")
+    print(f"   Rating         : {rating_line(r['vol_idx'], r['vol_label'], VOLUME_LEVELS, 'dBFS')}")
+    print(f"   {meter(vol_frac)}  {r['rms_db']:.1f} dBFS")
     print(" FREQUENCY")
     if r["silent"]:
         print("   Too quiet to measure frequency reliably.")
     else:
         print(f"   Dominant freq  : {r['dominant']:7.1f} Hz")
         print(f"   Spectral center: {r['centroid']:7.1f} Hz")
-        print(f"   Rating         : {r['freq_label']}")
-        print(f"   {meter(r['freq_idx'], FREQ_LEVELS)}")
-        print("   Band energy    : " +
-              "  ".join(f"{k} {v:4.1f}%" for k, v in r["bands"].items()))
-    print("=" * 52)
+        print(f"   Rating         : {rating_line(r['freq_idx'], r['freq_label'], FREQ_LEVELS, 'Hz')}")
+        print(f"   {meter(freq_frac)}  {r['dominant']:.1f} Hz")
+        print("   Top peaks      : " +
+              ", ".join(f"{f:.1f} Hz ({db:+.1f} dB)" for f, db in r["peaks"]))
+        print("   Band energy    :")
+        for name, lo, hi in BANDS:
+            print(f"     {name:<5}({lo:>5}-{hi:<5} Hz): {r['bands'][name]:5.1f}%")
+    print("=" * 60)
 
 
 def volume_color(idx):
