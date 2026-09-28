@@ -127,6 +127,38 @@ if [[ "$TARGET_USER_EXISTS" -eq 1 ]]; then
 fi
 
 # --------------------------------------------------------------------------- #
+# ~/.asoundrc overrides the system default, and the seeed-voicecard boot
+# service (which rewrites /etc/asound.conf) never touches it.
+step "Making the HAT the default sound device for ${TARGET_USER}"
+HAT_CARD="$(grep -oE '\[(seeed[^] ]*|wm8960[^] ]*) *\]' /proc/asound/cards 2>/dev/null \
+    | head -1 | tr -d '[] ' || true)"
+HAT_CARD="${HAT_CARD:-seeed2micvoicec}"     # driver just installed: name after reboot
+if [[ "$TARGET_USER_EXISTS" -eq 1 ]]; then
+    asoundrc="${TARGET_HOME}/.asoundrc"
+    if [[ -f "$asoundrc" ]] && ! grep -q "GSP-2026" "$asoundrc"; then
+        cp -p "$asoundrc" "${asoundrc}.bak-gsp"
+        echo "Kept your old ${asoundrc} as ${asoundrc}.bak-gsp"
+    fi
+    cat > "$asoundrc" <<EOF
+# Written by GSP-2026 install.sh: play and record through the ReSpeaker HAT
+# (card "${HAT_CARD}") by default. Delete this file to go back to the Pi's
+# own audio output.
+pcm.!default {
+    type plug
+    slave.pcm "hw:${HAT_CARD}"
+}
+ctl.!default {
+    type hw
+    card "${HAT_CARD}"
+}
+EOF
+    chown "$TARGET_USER:$target_group" "$asoundrc"
+    echo "Sound now plays through the HAT (card ${HAT_CARD}) for ${TARGET_USER}."
+else
+    warn "User ${TARGET_USER} not found - default sound device not changed."
+fi
+
+# --------------------------------------------------------------------------- #
 step "Done"
 echo "Command installed: ${BIN_PATH}"
 echo "Recordings are saved to: ${RECORDINGS_DIR}"
@@ -138,6 +170,7 @@ echo "  ${CMD_NAME}              double-tap the button: start a session recordin
 echo "                          double-tap again to stop and save it"
 echo "  ${CMD_NAME} --now        record right away"
 echo "  ${CMD_NAME} --file x.wav analyze an existing recording"
+echo "  ${CMD_NAME} --play       play the newest recording through the HAT"
 echo
 if [[ $REBOOT_NEEDED -eq 1 ]]; then
     warn "The sound card driver was just installed - reboot before first use:"
