@@ -1,0 +1,123 @@
+#!/usr/bin/env python3
+"""Fake `arecord` for tests: no real ALSA hardware is available.
+
+Behaviour is controlled by environment variables so the same script can
+stand in for several real-world `arecord` situations:
+
+  FAKE_ARECORD_CARDS   which `-l` listing to print: "seeed" (default),
+                        "wm8960", "hdmi" (no ReSpeaker present), "empty"
+  FAKE_ARECORD_FAIL     if set (non-empty), recording invocations fail:
+                        prints FAKE_ARECORD_FAIL to stderr and exits with
+                        FAKE_ARECORD_FAIL_CODE (default 1)
+  FAKE_ARECORD_FAIL_CODE  exit code to use for the failure above
+
+For a real recording invocation (`-D device -f S16_LE -r RATE -c CH -d SEC
+path`), it writes a valid 16-bit PCM WAV file containing a simple tone,
+with the requested rate/channels/duration, to the given path.
+"""
+import math
+import os
+import struct
+import sys
+import wave
+
+LISTINGS = {
+    "seeed": (
+        "**** List of CAPTURE Hardware Devices ****\n"
+        "card 0: b1 [bcm2835 HDMI 1], device 0: bcm2835 HDMI 1 [bcm2835 HDMI 1]\n"
+        "  Subdevices: 1/1\n"
+        "  Subdevice #0: subdevice #0\n"
+        "card 1: seeed2micvoicec [seeed-2mic-voicecard], device 0: "
+        "bcm2835-i2s-wm8960-hifi wm8960-hifi-0 [bcm2835-i2s-wm8960-hifi wm8960-hifi-0]\n"
+        "  Subdevices: 1/1\n"
+        "  Subdevice #0: subdevice #0\n"
+    ),
+    "wm8960": (
+        "**** List of CAPTURE Hardware Devices ****\n"
+        "card 2: wm8960soundcard [wm8960-soundcard], device 0: "
+        "bcm2835-i2s-wm8960-hifi wm8960-hifi-0 [bcm2835-i2s-wm8960-hifi wm8960-hifi-0]\n"
+        "  Subdevices: 1/1\n"
+        "  Subdevice #0: subdevice #0\n"
+    ),
+    "hdmi": (
+        "**** List of CAPTURE Hardware Devices ****\n"
+        "card 0: b1 [bcm2835 HDMI 1], device 0: bcm2835 HDMI 1 [bcm2835 HDMI 1]\n"
+        "  Subdevices: 1/1\n"
+        "  Subdevice #0: subdevice #0\n"
+        "card 0: b1 [bcm2835 HDMI 2], device 1: bcm2835 HDMI 2 [bcm2835 HDMI 2]\n"
+        "  Subdevices: 1/1\n"
+        "  Subdevice #0: subdevice #0\n"
+    ),
+    "empty": "",
+}
+
+
+def die(msg, code):
+    sys.stderr.write(msg + "\n")
+    sys.exit(code)
+
+
+def main():
+    args = sys.argv[1:]
+
+    if "-l" in args:
+        which = os.environ.get("FAKE_ARECORD_CARDS", "seeed")
+        sys.stdout.write(LISTINGS.get(which, LISTINGS["seeed"]))
+        sys.exit(0)
+
+    fail_msg = os.environ.get("FAKE_ARECORD_FAIL")
+    if fail_msg:
+        die(fail_msg, int(os.environ.get("FAKE_ARECORD_FAIL_CODE", "1")))
+
+    rate = 16000
+    channels = 2
+    seconds = 3
+    path = None
+
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a == "-D":
+            i += 2  # device value, unused by the fake
+        elif a == "-f":
+            i += 2  # sample format value, assumed S16_LE
+        elif a == "-r":
+            rate = int(args[i + 1])
+            i += 2
+        elif a == "-c":
+            channels = int(args[i + 1])
+            i += 2
+        elif a == "-d":
+            seconds = int(args[i + 1])
+            i += 2
+        elif a == "-q":
+            i += 1
+        elif a.startswith("-"):
+            i += 1
+        else:
+            path = a
+            i += 1
+
+    if not path:
+        die("fake arecord: no output path given", 1)
+
+    n_frames = int(rate * seconds)
+    freq = 440.0
+    amp = 12000
+    samples = bytearray()
+    for s in range(n_frames):
+        val = int(amp * math.sin(2 * math.pi * freq * s / rate))
+        one_frame = struct.pack("<h", val) * channels
+        samples += one_frame
+
+    with wave.open(path, "wb") as wf:
+        wf.setnchannels(channels)
+        wf.setsampwidth(2)
+        wf.setframerate(rate)
+        wf.writeframes(bytes(samples))
+
+    sys.exit(0)
+
+
+if __name__ == "__main__":
+    main()
