@@ -164,8 +164,16 @@ aplay "$(ls \-t ~/recordings/*.wav | head \-1)" # play the newest
 .RE
 .fi
 .PP
-To play through the HAT instead of the Pi's own audio output, add
-.BR "\-D plughw:seeed2micvoicec" .
+The installer makes the HAT the default sound device for your user (see
+.I ~/.asoundrc
+under
+.BR FILES ),
+so
+.B aplay
+plays through the HAT without any extra options.
+To play through the Pi's own audio output instead, name its card, for
+example
+.BR "aplay \-D plughw:Headphones FILE.wav" .
 Run
 .B aplay \-l
 to list the sound cards.
@@ -213,6 +221,9 @@ Adds your user to the audio, gpio, spi and i2c groups.
 .IP \(bu 2
 Creates the recordings folder.
 .IP \(bu 2
+Makes the HAT the default sound device for your user, so sound plays
+through the HAT's headphone jack.
+.IP \(bu 2
 Installs this command and this manual page.
 .PP
 To update after
@@ -234,6 +245,13 @@ The recordings folder, created by the installer.
 .I session_YYYYmmdd_HHMMSS_mmm.wav
 Double-tap recordings.
 .RE
+.TP
+.I ~/.asoundrc
+Written by the installer: makes the HAT the default device for playing
+and recording.
+An existing file is first saved as
+.IR ~/.asoundrc.bak\-gsp .
+Delete it to go back to the Pi's own audio output.
 .TP
 .I /usr/local/bin/gsp-keystudio
 This command.
@@ -286,6 +304,19 @@ Raise the capture volume with
 .B alsamixer
 (press F6 to pick the seeed card, then F4 for capture).
 .TP
+.B "Sound still comes out of the Pi, not the HAT"
+Run
+.BR "aplay \-l" ;
+if the HAT's card appeared only after a reboot, run
+.B sudo ./install.sh \-\-no\-driver
+again so
+.I ~/.asoundrc
+names the right card.
+Sound played with
+.B sudo
+uses root's settings, so play files without
+.BR sudo .
+.TP
 .B "The installer stops with \(lqSome index files failed to download\(rq"
 A package server did not respond.
 Run
@@ -302,8 +333,8 @@ Record and analyze 3 seconds right away.
 .B gsp-keystudio \-\-file ~/recordings/rec_20260928_033900_838.wav
 Analyze a saved recording.
 .TP
-.B aplay \-D plughw:seeed2micvoicec ~/recordings/session_20260928_033906_241.wav
-Play a session recording through the HAT.
+.B aplay ~/recordings/session_20260928_033906_241.wav
+Play a session recording (through the HAT by default).
 .SH SEE ALSO
 .BR arecord (1),
 .BR aplay (1),

@@ -29,6 +29,7 @@ The installer:
 - builds the ReSpeaker driver for your kernel
 - adds your user to the audio/gpio/spi groups
 - creates the recordings folder (`/home/pranav/recordings/`) and points the command at it
+- makes the HAT the default sound device, so playback goes to the HAT's headphone jack
 - creates the `gsp-keystudio` command and its manual page (`man gsp-keystudio`)
 
 If the driver is already installed, use `--no-driver` to skip that step. After you pull new code, run the installer again to update the command.
@@ -51,7 +52,7 @@ ls -lt /home/pranav/recordings/                               # list them, newes
 aplay /home/pranav/recordings/session_20260928_033906_241.wav  # play one
 aplay "$(ls -t /home/pranav/recordings/*.wav | head -1)"       # play the newest
 ```
-Plug headphones or a speaker into the ReSpeaker HAT's headphone jack. To play through the HAT instead of the Pi's own audio output, add `-D plughw:seeed2micvoicec`. Run `aplay -l` to see the card names.
+Plug headphones or a speaker into the ReSpeaker HAT's headphone jack. The installer makes the HAT the default sound device (it writes `~/.asoundrc`), so `aplay` plays through the HAT without any extra options. To use the Pi's own audio output instead, add `-D plughw:Headphones`, or delete `~/.asoundrc`. Run `aplay -l` to see the card names.
 
 To listen on another computer, copy the files over, for example `scp pranav@<pi-address>:recordings/*.wav .`, and open them in any media player.
 
