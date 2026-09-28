@@ -7,7 +7,7 @@
 | **Tap once** | Records 3 s, then shows the analysis below | `rec_<date>_<time>.wav` |
 | **Double-tap** | Starts a session recording with no time limit and no analysis. The LEDs turn magenta. **Double-tap again** to stop and save it. | `session_<date>_<time>.wav` |
 
-Both kinds go to the recordings folder that the installer creates (`/home/pranav/recordings/`). If you press Ctrl+C during a session, the session is saved before the program exits.
+Both kinds go to the recordings folder that the installer creates (`/home/pranav/recordings/`). If you press Ctrl+C during a session, the session is saved before the program exits. A single tap starts about 0.4 s after you let go, because the program waits to see whether a second tap is coming. During a session a single tap does nothing, and a quick third tap after a double-tap is ignored.
 
 The analysis after a single tap reports:
 
