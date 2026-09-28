@@ -41,9 +41,15 @@ The script detects the sound card automatically; use `--device plughw:N,0` to ov
 
 The SPL figure is approximate (`SPL_OFFSET` in the script). To get accurate numbers, calibrate it against a sound meter.
 
-## Testing
-The tests don't need the HAT. They use fake versions of the GPIO pins, the SPI LEDs, `arecord`, `apt-get` and the other system tools, so you can run them on the Pi or on any Linux machine:
+## Play back your recordings
+Every recording is saved in the folder the installer made: `/home/pranav/recordings/`.
+
 ```bash
-python3 -m unittest tests.test_analysis tests.test_hardware   # analysis, button, recording, LEDs, CLI
-sudo bash tests/test_install.sh                               # installer, run in a sandbox
+ls -lt /home/pranav/recordings/                               # list them, newest first
+aplay /home/pranav/recordings/session_20260928_033906_241.wav  # play one
+aplay "$(ls -t /home/pranav/recordings/*.wav | head -1)"       # play the newest
 ```
+Plug headphones or a speaker into the ReSpeaker HAT's headphone jack. To play through the HAT instead of the Pi's own audio output, add `-D plughw:seeed2micvoicec`. Run `aplay -l` to see the card names.
+
+To listen on another computer, copy the files over, for example `scp pranav@<pi-address>:recordings/*.wav .`, and open them in any media player.
+

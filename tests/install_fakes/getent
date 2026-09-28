@@ -1,4 +1,0 @@
-#!/usr/bin/env bash
-# Logs the call, then delegates to the real `getent` so answers stay correct.
-echo "getent $*" >> "$CALL_LOG"
-exec /usr/bin/getent "$@"

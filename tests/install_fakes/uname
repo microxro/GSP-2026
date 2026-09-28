@@ -1,8 +1,0 @@
-#!/usr/bin/env bash
-# Fake uname: only "-r" is special-cased (install.sh only ever calls
-# `uname -r`); everything else falls through to the real binary.
-if [[ "$1" == "-r" ]]; then
-    echo "${FAKE_KERNEL:-6.6.51+rpt-rpi-v8}"
-    exit 0
-fi
-exec /usr/bin/uname "$@"

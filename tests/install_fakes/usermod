@@ -1,5 +1,0 @@
-#!/usr/bin/env bash
-# Logs the call, then delegates to the real `usermod` (acting on a real,
-# ephemeral test user the test harness created) so the effect is real.
-echo "usermod $*" >> "$CALL_LOG"
-exec /usr/sbin/usermod "$@"

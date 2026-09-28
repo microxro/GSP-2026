@@ -9,7 +9,7 @@
 set -euo pipefail
 
 CMD_NAME="gsp-keystudio"
-# GSP_INSTALL_DIR / GSP_BIN_PATH let tests (or an alternate prefix) override
+# GSP_INSTALL_DIR / GSP_BIN_PATH can override
 # these locations; the defaults below are unchanged for a normal install.
 INSTALL_DIR="${GSP_INSTALL_DIR:-/opt/gsp-keystudio}"
 BIN_PATH="${GSP_BIN_PATH:-/usr/local/bin/${CMD_NAME}}"
