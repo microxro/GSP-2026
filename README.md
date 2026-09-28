@@ -34,14 +34,13 @@ The installer:
 
 If the driver is already installed, use `--no-driver` to skip that step. After you pull new code, run the installer again to update the command.
 
-## If playback gives "Input/output error" / faster booting
-On newer kernels the seeed driver can't play sound (`aplay: write error: Input/output error`, and `dmesg` shows `no PCM clock`). `pi-setup.sh` fixes this and also makes the Pi boot faster:
+## If playback gives "Input/output error"
+On newer kernels the seeed driver can't play sound: `aplay` shows `write error: Input/output error` and `dmesg` shows `no PCM clock`. `pi-setup.sh` fixes this:
 ```bash
 cd ~/GSP-2026
-sudo ./pi-setup.sh            # applies the changes, then reboots
+sudo ./pi-setup.sh            # applies the fix, then reboots
 ```
-- **Audio:** switches to the kernel's built-in `wm8960-soundcard` driver, keeping the card name `seeed2micvoicec`. It turns on the headphone output and mics once on the next boot (log: `/var/log/gsp-audio-levels.log`).
-- **Boot speed:** skips boot-time disk checks, hides kernel messages, and turns off `console-setup`, `e2scrub_reap`, `rpi-eeprom-update` (if present) and the swap-file resizer. The original `cmdline.txt` is saved as `cmdline.txt.bak`.
+It switches to the kernel's built-in `wm8960-soundcard` driver, keeping the card name `seeed2micvoicec`. On the next boot it turns on the headphone output and mics once (log: `/var/log/gsp-audio-levels.log`).
 
 It's safe to run more than once. Use `--no-reboot` to reboot later yourself.
 

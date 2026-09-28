@@ -1,22 +1,19 @@
 #!/usr/bin/env bash
-# Fixes HAT playback and speeds up booting on the Pi. Run once:
+# Fixes HAT playback ("Input/output error") on the Pi. Run once:
 #
-#   sudo ./pi-setup.sh              # apply everything, then reboot
-#   sudo ./pi-setup.sh --no-reboot  # apply everything, reboot later yourself
+#   sudo ./pi-setup.sh              # apply the fix, then reboot
+#   sudo ./pi-setup.sh --no-reboot  # apply the fix, reboot later yourself
 #
-# 1. Audio: replaces the seeed-voicecard driver (playback fails with
-#    "Input/output error" / "no PCM clock") with the kernel's built-in
-#    wm8960-soundcard overlay, keeping the card name seeed2micvoicec, and
-#    sets the mixer levels once on the next boot.
-# 2. Boot speed: skips boot-time filesystem checks, quiets kernel messages,
-#    and turns off services the Pi Zero doesn't need at boot.
+# Replaces the seeed-voicecard driver (playback fails with "Input/output
+# error" / "no PCM clock") with the kernel's built-in wm8960-soundcard
+# overlay, keeping the card name seeed2micvoicec, and sets the mixer levels
+# once on the next boot.
 #
 # Safe to run more than once.
 set -uo pipefail
 
 CARD="seeed2micvoicec"
 CONFIG=/boot/firmware/config.txt
-CMDLINE=/boot/firmware/cmdline.txt
 OVERLAY_LINE="dtoverlay=wm8960-soundcard,alsaname=${CARD}"
 LEVELS_SCRIPT=/usr/local/sbin/gsp-audio-levels
 LEVELS_UNIT=/etc/systemd/system/gsp-audio-levels.service
@@ -25,7 +22,7 @@ REBOOT=1
 for arg in "$@"; do
     case "$arg" in
         --no-reboot) REBOOT=0 ;;
-        -h|--help) sed -n '2,14p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,11p' "$0"; exit 0 ;;
         *) echo "Unknown option: $arg"; exit 1 ;;
     esac
 done
@@ -37,12 +34,12 @@ if [[ $EUID -ne 0 ]]; then
     echo "Please run as root:  sudo $0"
     exit 1
 fi
-for f in "$CONFIG" "$CMDLINE" /etc/fstab; do
+for f in "$CONFIG" /etc/modules; do
     [[ -f "$f" ]] || { echo "$f not found - is this Raspberry Pi OS?"; exit 1; }
 done
 
 # =========================================================================== #
-# 1. Audio: built-in WM8960 driver instead of seeed-voicecard
+# Built-in WM8960 driver instead of seeed-voicecard
 # =========================================================================== #
 step "Removing the seeed-voicecard driver"
 if systemctl list-unit-files seeed-voicecard.service 2>/dev/null | grep -q "^seeed-voicecard"; then
@@ -113,40 +110,10 @@ systemctl enable gsp-audio-levels.service
 echo "Will run once at the next boot (log: /var/log/gsp-audio-levels.log)."
 
 # =========================================================================== #
-# 2. Faster booting
-# =========================================================================== #
-step "Skipping the boot partition's filesystem check"
-sed -i '/\/boot\/firmware/ s/[0-9]\s*$/0/' /etc/fstab
-grep "/boot/firmware" /etc/fstab || true
-
-step "Masking rpi-resize-swap-file.service"
-systemctl mask rpi-resize-swap-file.service
-
-step "Quieter, faster kernel boot (cmdline.txt)"
-[[ -f "${CMDLINE}.bak" ]] || cp "$CMDLINE" "${CMDLINE}.bak"
-for opt in quiet loglevel=3 fsck.mode=skip; do
-    if ! grep -qE "(^| )${opt}( |$)" "$CMDLINE"; then
-        sed -i "1 s/\$/ ${opt}/" "$CMDLINE"
-    fi
-done
-echo "Backup: ${CMDLINE}.bak"
-cat "$CMDLINE"
-
-step "Disabling services not needed at boot"
-for svc in console-setup.service e2scrub_reap.service rpi-eeprom-update.service; do
-    if systemctl list-unit-files "$svc" 2>/dev/null | grep -q "^$svc"; then
-        systemctl disable "$svc" && echo "Disabled $svc"
-    else
-        echo "Skipped $svc (not on this Pi)"
-    fi
-done
-
-# =========================================================================== #
 step "Done"
 echo "After the reboot, test playback with:  gsp-keystudio --play"
 echo "To undo the audio change: remove '${OVERLAY_LINE}' from ${CONFIG},"
 echo "then run sudo ./install.sh to reinstall the seeed driver."
-echo "To undo cmdline.txt: sudo cp ${CMDLINE}.bak ${CMDLINE}"
 if [[ $REBOOT -eq 1 ]]; then
     echo "Rebooting in 5 seconds (Ctrl+C to cancel)..."
     sleep 5
