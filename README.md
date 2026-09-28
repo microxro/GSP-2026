@@ -6,17 +6,26 @@
 - **Frequency:** the exact dominant frequency, the spectral centroid and the top 3 peaks (Hz). Band energy is shown as a % for Low 20–250, Mid 250–4000 and High 4000+ Hz. You also get a rating from VERY LOW to VERY HIGH showing its level and range, plus a meter with a 0–100 score.
 - **LEDs (optional):** red while recording, blue while analyzing, then green→red to show loudness
 
-## Setup (Raspberry Pi)
+## One-step install (Raspberry Pi)
 ```bash
-sudo apt install alsa-utils python3-numpy python3-rpi.gpio python3-spidev
-arecord -l            # confirm the seeed/wm8960 card is listed
+cd /home/pranav/GSP-2026
+sudo ./install.sh
+sudo reboot            # only needed the first time (sound card driver)
 ```
+The installer:
+- installs the packages
+- turns on I2C and SPI
+- builds the ReSpeaker driver for your kernel
+- adds your user to the audio/gpio/spi groups
+- creates the `gsp-keystudio` command
 
-## Run
+If the driver is already installed, use `--no-driver` to skip that step. After you pull new code, run the installer again to update the command.
+
+## Run (from any folder)
 ```bash
-python3 /home/pranav/GSP-2026/respeaker_analyzer.py            # button mode
-python3 /home/pranav/GSP-2026/respeaker_analyzer.py --now      # record once now
-python3 /home/pranav/GSP-2026/respeaker_analyzer.py --file x.wav
+gsp-keystudio               # waits for the button, records 3 s, shows results
+gsp-keystudio --now         # records right away
+gsp-keystudio --file x.wav  # analyzes an existing WAV
 ```
 Recordings are saved to `/home/pranav/recordings/`. Add `--no-save` to delete each recording after it's analyzed. The script detects the sound card automatically; use `--device plughw:N,0` to override it.
 
