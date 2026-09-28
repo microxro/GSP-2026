@@ -18,32 +18,24 @@ The analysis after a single tap reports:
 - **LEDs (optional):** red while recording, blue while analyzing, then green→red to show loudness
 
 ## One-step install (Raspberry Pi)
+Works on a fresh Raspberry Pi OS Lite, including the Pi Zero WH. You only need `git` to get the code:
 ```bash
-cd /home/pranav/GSP-2026
-sudo ./install.sh
-sudo reboot            # only needed the first time (sound card driver)
+cd ~
+git clone https://github.com/microxro/GSP-2026
+cd GSP-2026
+sudo ./install.sh       # answers "Reboot now?" at the end - say yes the first time
 ```
 The installer:
-- installs the packages
+- installs the packages (alsa-utils, numpy, the GPIO and SPI libraries, man-db)
 - turns on I2C and SPI
-- builds the ReSpeaker driver for your kernel
-- adds your user to the audio/gpio/spi groups
+- sets up the HAT's sound card with the kernel's built-in WM8960 driver (`dtoverlay=wm8960-soundcard`), and removes the old seeed-voicecard driver if it's installed
+- turns on the headphone output and microphones once the card appears (log: `/var/log/gsp-audio-levels.log`)
+- adds your user to the audio/gpio/spi/i2c groups
 - creates the recordings folder (`/home/pranav/recordings/`) and points the command at it
 - makes the HAT the default sound device, so playback goes to the HAT's headphone jack
 - creates the `gsp-keystudio` command and its manual page (`man gsp-keystudio`)
 
-If the driver is already installed, use `--no-driver` to skip that step. After you pull new code, run the installer again to update the command.
-
-## If playback gives "Input/output error" / faster booting
-On newer kernels the seeed driver can't play sound (`aplay: write error: Input/output error`, and `dmesg` shows `no PCM clock`). `pi-setup.sh` fixes this and also makes the Pi boot faster:
-```bash
-cd ~/GSP-2026
-sudo ./pi-setup.sh            # applies the changes, then reboots
-```
-- **Audio:** switches to the kernel's built-in `wm8960-soundcard` driver, keeping the card name `seeed2micvoicec`. It turns on the headphone output and mics once on the next boot (log: `/var/log/gsp-audio-levels.log`).
-- **Boot speed:** skips boot-time disk checks, hides kernel messages, and turns off `console-setup`, `e2scrub_reap`, `rpi-eeprom-update` (if present) and the swap-file resizer. The original `cmdline.txt` is saved as `cmdline.txt.bak`.
-
-It's safe to run more than once. Use `--no-reboot` to reboot later yourself.
+It's safe to run more than once. After you `git pull` new code, run `sudo ./install.sh` again to update the command. Use `--no-driver` to leave the sound card setup alone.
 
 ## Run (from any folder)
 ```bash
