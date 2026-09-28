@@ -323,6 +323,15 @@ Raise the capture volume with
 .B alsamixer
 (press F6 to pick the seeed card, then F4 for capture).
 .TP
+.B "Playback fails with \(lqwrite error: Input/output error\(rq"
+The seeed driver does not start the audio clock on newer kernels
+.RB ( dmesg
+shows
+.IR "no PCM clock" ).
+Run
+.B sudo ./pi-setup.sh
+from the project folder to switch to the kernel's built-in WM8960 driver.
+.TP
 .B "Sound still comes out of the Pi, not the HAT"
 Run
 .BR "aplay \-l" ;
