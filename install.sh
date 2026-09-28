@@ -82,6 +82,19 @@ if [[ $INSTALL_DRIVER -eq 1 ]]; then
 fi
 
 # --------------------------------------------------------------------------- #
+step "Resolving ${TARGET_USER}'s recordings folder"
+if id "$TARGET_USER" >/dev/null 2>&1; then
+    TARGET_USER_EXISTS=1
+    TARGET_HOME="$(getent passwd "$TARGET_USER" | cut -d: -f6)"
+else
+    TARGET_USER_EXISTS=0
+    TARGET_HOME="/home/${TARGET_USER}"
+    warn "User ${TARGET_USER} not found - skipping group setup."
+fi
+RECORDINGS_DIR="${TARGET_HOME}/recordings"
+echo "Recordings folder: ${RECORDINGS_DIR}"
+
+# --------------------------------------------------------------------------- #
 step "Installing the ${CMD_NAME} command"
 install -d -m 755 "$INSTALL_DIR"
 install -m 755 "${SRC_DIR}/respeaker_analyzer.py" "${INSTALL_DIR}/respeaker_analyzer.py"
@@ -89,30 +102,32 @@ install -m 755 "${SRC_DIR}/respeaker_analyzer.py" "${INSTALL_DIR}/respeaker_anal
 cat > "$BIN_PATH" <<EOF
 #!/usr/bin/env bash
 # Runs the ReSpeaker 2-Mic HAT recorder/analyzer. Installed by install.sh.
+export GSP_RECORDINGS_DIR="${RECORDINGS_DIR}"
 exec python3 "${INSTALL_DIR}/respeaker_analyzer.py" "\$@"
 EOF
 chmod 755 "$BIN_PATH"
 
 # --------------------------------------------------------------------------- #
-step "Giving ${TARGET_USER} access to audio, GPIO and SPI"
-if id "$TARGET_USER" >/dev/null 2>&1; then
+step "Giving ${TARGET_USER} access to audio, GPIO, SPI and the recordings folder"
+if [[ "$TARGET_USER_EXISTS" -eq 1 ]]; then
     for group in audio gpio spi i2c; do
         if getent group "$group" >/dev/null; then
             usermod -aG "$group" "$TARGET_USER"
         fi
     done
-    user_home="$(getent passwd "$TARGET_USER" | cut -d: -f6)"
-    install -d -o "$TARGET_USER" -g "$TARGET_USER" "${user_home}/recordings"
-else
-    warn "User ${TARGET_USER} not found - skipping group setup."
+    target_group="$(id -gn "$TARGET_USER")"
+    install -d -m 755 -o "$TARGET_USER" -g "$target_group" "$RECORDINGS_DIR"
 fi
 
 # --------------------------------------------------------------------------- #
 step "Done"
 echo "Command installed: ${BIN_PATH}"
+echo "Recordings are saved to: ${RECORDINGS_DIR}"
 echo
 echo "Usage (from any folder):"
-echo "  ${CMD_NAME}              wait for the HAT button, record 3 s, show results"
+echo "  ${CMD_NAME}              tap the button once: record 3 s and show results"
+echo "  ${CMD_NAME}              double-tap the button: start a session recording;"
+echo "                          double-tap again to stop and save it"
 echo "  ${CMD_NAME} --now        record right away"
 echo "  ${CMD_NAME} --file x.wav analyze an existing recording"
 echo

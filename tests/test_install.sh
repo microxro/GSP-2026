@@ -77,9 +77,15 @@ PATH_NO_RC="$NO_RC_DIR:$PATH"
 # A real, ephemeral system user + groups so id/getent/usermod/install -o/-g
 # (all real binaries, or thin logging wrappers around them) behave
 # correctly, without touching any real person's account.
+# The primary group is deliberately named differently from the username, so
+# any code that assumes "a group named after the user" (instead of asking
+# `id -gn`) would be caught creating the recordings folder with the wrong
+# group.
+TEST_GROUP="gsptestgrp$$"
+groupadd "$TEST_GROUP"
 TEST_USER="gsptestusr$$"
 TEST_HOME="$SANDBOX/home/$TEST_USER"
-useradd -M -d "$TEST_HOME" "$TEST_USER"
+useradd -M -d "$TEST_HOME" -g "$TEST_GROUP" "$TEST_USER"
 
 CREATED_GROUPS=()
 for g in gpio spi i2c; do
@@ -89,9 +95,28 @@ for g in gpio spi i2c; do
     fi
 done
 
+# A second ephemeral test user whose home directory contains a space, to
+# prove the recordings path survives quoting all the way into the wrapper.
+SPACE_GROUP="gspspacegrp$$"
+SPACE_USER="gspspaceusr$$"
+SPACE_HOME="$SANDBOX/home/gsp space home $$"
+SPACE_USER_OK=1
+groupadd "$SPACE_GROUP" 2>/dev/null || SPACE_USER_OK=0
+if [[ "$SPACE_USER_OK" -eq 1 ]]; then
+    useradd -M -d "$SPACE_HOME" -g "$SPACE_GROUP" "$SPACE_USER" 2>/dev/null || SPACE_USER_OK=0
+fi
+if [[ "$SPACE_USER_OK" -eq 1 ]]; then
+    mkdir -p "$SPACE_HOME"
+fi
+
 # shellcheck disable=SC2329  # invoked via trap
 cleanup() {
     userdel "$TEST_USER" >/dev/null 2>&1
+    groupdel "$TEST_GROUP" >/dev/null 2>&1
+    if [[ "$SPACE_USER_OK" -eq 1 ]]; then
+        userdel "$SPACE_USER" >/dev/null 2>&1
+        groupdel "$SPACE_GROUP" >/dev/null 2>&1
+    fi
     for g in "${CREATED_GROUPS[@]}"; do
         groupdel "$g" >/dev/null 2>&1
     done
@@ -194,10 +219,14 @@ if [[ -x "$bpath" ]]; then pass "C4: wrapper created and executable"; else fail 
 if [[ -f "$idir/respeaker_analyzer.py" ]]; then pass "C4: analyzer copied into install dir"; else fail "C4: analyzer copied into install dir"; fi
 if cmp -s "$idir/respeaker_analyzer.py" "$REPO_DIR/respeaker_analyzer.py"; then pass "C4: copied analyzer matches source"; else fail "C4: copied analyzer matches source"; fi
 
+wrapper_content="$(cat "$bpath")"
+assert_contains "$wrapper_content" "export GSP_RECORDINGS_DIR=\"$TEST_HOME/recordings\"" "C4: wrapper exports GSP_RECORDINGS_DIR pointing at the target user's recordings folder"
+
 wrap_out="$(PATH="$PATH_FAKES" "$bpath" --file "my file.wav" --now 2>&1)"
 assert_contains "$wrap_out" "ARG:[--file]" "C4: wrapper passes through --file"
 assert_contains "$wrap_out" "ARG:[my file.wav]" "C4: wrapper passes through an arg containing spaces intact"
 assert_contains "$wrap_out" "ARG:[--now]" "C4: wrapper passes through --now"
+assert_contains "$wrap_out" "ENV:GSP_RECORDINGS_DIR=[$TEST_HOME/recordings]" "C4: GSP_RECORDINGS_DIR is actually visible to the child process with the exact path"
 
 log="$(cat "$CALL_LOG")"
 assert_contains "$log" "usermod -aG audio $TEST_USER" "C4: usermod -aG audio for target user"
@@ -209,7 +238,17 @@ rec_dir="$TEST_HOME/recordings"
 if [[ -d "$rec_dir" ]]; then pass "C4: recordings dir created in user's home"; else fail "C4: recordings dir created in user's home"; fi
 owner="$(stat -c '%U' "$rec_dir" 2>/dev/null || echo '?')"
 if [[ "$owner" == "$TEST_USER" ]]; then pass "C4: recordings dir owned by target user"; else fail "C4: recordings dir owned by target user (was: $owner)"; fi
+group="$(stat -c '%G' "$rec_dir" 2>/dev/null || echo '?')"
+if [[ "$group" == "$TEST_GROUP" ]]; then
+    pass "C4: recordings dir owned by target user's primary group (via id -gn, distinct from the username)"
+else
+    fail "C4: recordings dir owned by target user's primary group (was: $group, expected: $TEST_GROUP)"
+fi
+mode="$(stat -c '%a' "$rec_dir" 2>/dev/null || echo '?')"
+if [[ "$mode" == "755" ]]; then pass "C4: recordings dir mode is 755"; else fail "C4: recordings dir mode is 755 (was: $mode)"; fi
 
+assert_contains "$OUT" "Recordings are saved to: $rec_dir" "C4: final summary prints the recordings folder path"
+assert_contains "$OUT" "double-tap" "C4: usage lines mention the double-tap session recording mode"
 assert_contains "$OUT" "Log out" "C4: final message tells user to log out"
 assert_not_contains "$OUT" "sudo reboot" "C4: final message does not tell user to reboot (no driver installed)"
 assert_not_contains "$OUT" "was just installed" "C4: final message does not claim the driver was installed"
@@ -320,12 +359,20 @@ export SUDO_USER="$TEST_USER"
 idir="$SANDBOX/c11/opt"; bpath="$SANDBOX/c11/bin/gsp-keystudio"
 do_run "$PATH_FAKES" "$idir" "$bpath" --no-driver
 first_rc=$RC
+c11_rec_dir="$TEST_HOME/recordings"
+marker_file="$c11_rec_dir/keep-me.wav"
+echo "pre-existing recording" > "$marker_file"
 do_run "$PATH_FAKES" "$idir" "$bpath" --no-driver
 second_rc=$RC
 assert_exit_eq "$first_rc" 0 "C11: first run succeeds"
 assert_exit_eq "$second_rc" 0 "C11: second run succeeds"
 wrap_out="$(PATH="$PATH_FAKES" "$bpath" --ping 2>&1)"
 assert_contains "$wrap_out" "ARG:[--ping]" "C11: wrapper still works correctly after re-install"
+if [[ -f "$marker_file" ]] && grep -q "pre-existing recording" "$marker_file"; then
+    pass "C11: a pre-existing file in the recordings folder survives a re-run"
+else
+    fail "C11: a pre-existing file in the recordings folder survives a re-run"
+fi
 
 # =========================================================================== #
 echo "--- C12: SUDO_USER unset defaults to pranav; missing user warns without crashing ---"
@@ -352,6 +399,14 @@ assert_exit_eq "$RC" 0 "C12: succeeds when the target user doesn't exist"
 assert_contains "$OUT" "User gsp_no_such_user_$$ not found" "C12: warns that the user is missing"
 assert_not_contains "$(cat "$CALL_LOG")" "usermod" "C12: no usermod calls for a nonexistent user"
 if [[ ! -e "/home/gsp_no_such_user_$$" ]]; then pass "C12: no home dir created for a missing user"; else fail "C12: no home dir created for a missing user"; fi
+wrapper_content_c12b="$(cat "$bpath")"
+assert_contains "$wrapper_content_c12b" "export GSP_RECORDINGS_DIR=\"/home/gsp_no_such_user_$$/recordings\"" "C12: wrapper still exports GSP_RECORDINGS_DIR under /home/<user>/recordings for a missing user"
+if [[ ! -e "/home/gsp_no_such_user_$$/recordings" ]]; then
+    pass "C12: recordings folder not created for a missing user (analyzer creates it on first use)"
+else
+    fail "C12: recordings folder not created for a missing user"
+fi
+assert_contains "$OUT" "Recordings are saved to: /home/gsp_no_such_user_$$/recordings" "C12: summary still prints the would-be recordings path for a missing user"
 
 # =========================================================================== #
 echo "--- C13: raspi-config missing -- warns and continues ---"
@@ -378,6 +433,33 @@ if [[ " ${CREATED_GROUPS[*]:-} " == *" spi "* ]]; then
     groupadd spi >/dev/null 2>&1
 else
     echo "SKIP: C14 (spi group pre-existed on this system; not safe to delete it for the test)"
+fi
+
+# =========================================================================== #
+echo "--- C15: a home directory path containing a space works end to end ---"
+if [[ "$SPACE_USER_OK" -eq 1 ]]; then
+    reset_case_env; reset_log
+    export SUDO_USER="$SPACE_USER"
+    idir="$SANDBOX/c15/opt"; bpath="$SANDBOX/c15/bin/gsp-keystudio"
+    do_run "$PATH_FAKES" "$idir" "$bpath" --no-driver
+    assert_exit_eq "$RC" 0 "C15: succeeds for a target user whose home contains a space"
+    space_rec_dir="$SPACE_HOME/recordings"
+    assert_contains "$OUT" "Recordings are saved to: $space_rec_dir" "C15: summary prints the space-containing recordings path"
+
+    wrapper_content_c15="$(cat "$bpath")"
+    assert_contains "$wrapper_content_c15" "export GSP_RECORDINGS_DIR=\"$space_rec_dir\"" "C15: wrapper exports the correctly-quoted, space-containing recordings path"
+
+    if [[ -d "$space_rec_dir" ]]; then pass "C15: recordings dir created under the space-containing home"; else fail "C15: recordings dir created under the space-containing home"; fi
+    owner="$(stat -c '%U' "$space_rec_dir" 2>/dev/null || echo '?')"
+    if [[ "$owner" == "$SPACE_USER" ]]; then pass "C15: recordings dir owned by the space-home user"; else fail "C15: recordings dir owned by the space-home user (was: $owner)"; fi
+    group="$(stat -c '%G' "$space_rec_dir" 2>/dev/null || echo '?')"
+    if [[ "$group" == "$SPACE_GROUP" ]]; then pass "C15: recordings dir owned by the space-home user's primary group"; else fail "C15: recordings dir owned by the space-home user's primary group (was: $group)"; fi
+
+    wrap_out="$(PATH="$PATH_FAKES" "$bpath" --now 2>&1)"
+    assert_contains "$wrap_out" "ENV:GSP_RECORDINGS_DIR=[$space_rec_dir]" "C15: GSP_RECORDINGS_DIR is visible to the child process, space and all"
+    unset SUDO_USER
+else
+    echo "SKIP: C15 (could not create a test user/group with a space in the home path on this system)"
 fi
 
 # =========================================================================== #
