@@ -219,22 +219,24 @@ From the project folder, run once:
 .nf
 .RS
 cd ~/GSP-2026
-sudo ./install.sh
-sudo reboot        # first time only, for the sound card driver
+sudo ./install.sh  # say yes to "Reboot now?" the first time
 .RE
 .fi
 .PP
 The installer does the following:
 .IP \(bu 2
 Installs the needed packages (alsa-utils, numpy, the GPIO and SPI
-libraries, and the tools to build the driver).
+libraries, man-db).
+It works on a fresh Raspberry Pi OS Lite.
 .IP \(bu 2
 Turns on I2C and SPI.
 .IP \(bu 2
-Builds the ReSpeaker sound card driver for the running kernel, unless
-the card is already detected or
+Sets up the HAT's sound card with the kernel's built-in WM8960 driver
+.RB ( dtoverlay=wm8960\-soundcard ),
+removes the old seeed-voicecard driver if present, and turns on the
+headphone output and microphones once the card appears.
 .B \-\-no\-driver
-is given.
+skips this step.
 .IP \(bu 2
 Adds your user to the audio, gpio, spi and i2c groups.
 .IP \(bu 2
@@ -283,6 +285,13 @@ The program itself.
 .TP
 .I /usr/local/share/man/man1/gsp-keystudio.1
 This manual page.
+.TP
+.I /usr/local/sbin/gsp-audio-levels
+One-time helper (run by
+.BR gsp\-audio\-levels.service )
+that turns on the HAT's headphone output and microphones.
+Its log is
+.IR /var/log/gsp-audio-levels.log .
 .SH ENVIRONMENT
 .TP
 .B GSP_RECORDINGS_DIR
@@ -318,28 +327,32 @@ If it doesn't, reboot, or run
 .B sudo ./install.sh
 again.
 .TP
-.B Recordings are silent or very quiet
-Raise the capture volume with
+.B Recordings are silent, or playback is silent
+Check
+.I /var/log/gsp-audio-levels.log
+and adjust the levels with
 .B alsamixer
-(press F6 to pick the seeed card, then F4 for capture).
+(press F6 to pick the seeed2micvoicec card; F3 for playback, F4 for
+capture), then save them with
+.BR "sudo alsactl store" .
 .TP
 .B "Playback fails with \(lqwrite error: Input/output error\(rq"
-The seeed driver does not start the audio clock on newer kernels
+The old seeed-voicecard driver does not start the audio clock on newer
+kernels
 .RB ( dmesg
 shows
 .IR "no PCM clock" ).
 Run
-.B sudo ./pi-setup.sh
-from the project folder to switch to the kernel's built-in WM8960 driver.
+.B sudo ./install.sh
+again from the project folder and reboot; it switches to the kernel's
+built-in WM8960 driver.
 .TP
 .B "Sound still comes out of the Pi, not the HAT"
 Run
 .BR "aplay \-l" ;
-if the HAT's card appeared only after a reboot, run
-.B sudo ./install.sh \-\-no\-driver
-again so
-.I ~/.asoundrc
-names the right card.
+it should list
+.IR seeed2micvoicec .
+If it doesn't, reboot once after installing.
 Sound played with
 .B sudo
 uses root's settings, so play files without

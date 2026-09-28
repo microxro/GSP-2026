@@ -1,29 +1,34 @@
 #!/usr/bin/env bash
-# One-shot installer for the Keyestudio ReSpeaker 2-Mic HAT analyzer.
+# One-step installer for the Keyestudio ReSpeaker 2-Mic HAT recorder/analyzer.
+# Works on a fresh Raspberry Pi OS Lite (written for the Pi Zero WH):
 #
-#   sudo ./install.sh              # full install (packages, driver, command)
-#   sudo ./install.sh --no-driver  # skip the ReSpeaker sound card driver
+#   sudo ./install.sh              # full install, asks to reboot at the end
+#   sudo ./install.sh --no-driver  # don't touch the sound card setup
 #
-# Afterwards, run the analyzer from anywhere with:  gsp-keystudio
-# (all script options pass through, e.g. gsp-keystudio --now)
+# Afterwards, run the program from anywhere with:  gsp-keystudio
+# Full manual:                                     man gsp-keystudio
 set -euo pipefail
 
 CMD_NAME="gsp-keystudio"
+CARD="seeed2micvoicec"          # ALSA name for the HAT (kept from the old driver)
+OVERLAY_LINE="dtoverlay=wm8960-soundcard,alsaname=${CARD}"
 # GSP_INSTALL_DIR / GSP_BIN_PATH / GSP_MAN_DIR can override
 # these locations; the defaults below are unchanged for a normal install.
 INSTALL_DIR="${GSP_INSTALL_DIR:-/opt/gsp-keystudio}"
 BIN_PATH="${GSP_BIN_PATH:-/usr/local/bin/${CMD_NAME}}"
 MAN_DIR="${GSP_MAN_DIR:-/usr/local/share/man/man1}"
-DRIVER_REPO="https://github.com/HinTak/seeed-voicecard"
+LEVELS_SCRIPT=/usr/local/sbin/gsp-audio-levels
+LEVELS_UNIT=/etc/systemd/system/gsp-audio-levels.service
 SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TARGET_USER="${SUDO_USER:-pranav}"
-INSTALL_DRIVER=1
+SETUP_DRIVER=1
 REBOOT_NEEDED=0
+export DEBIAN_FRONTEND=noninteractive
 
 for arg in "$@"; do
     case "$arg" in
-        --no-driver) INSTALL_DRIVER=0 ;;
-        -h|--help) sed -n '2,8p' "$0"; exit 0 ;;
+        --no-driver) SETUP_DRIVER=0 ;;
+        -h|--help) sed -n '2,9p' "$0"; exit 0 ;;
         *) echo "Unknown option: $arg"; exit 1 ;;
     esac
 done
@@ -41,12 +46,37 @@ for f in respeaker_analyzer.py "${CMD_NAME}.1"; do
         exit 1
     fi
 done
+CONFIG=/boot/firmware/config.txt              # Bookworm and newer
+[[ -f "$CONFIG" ]] || CONFIG=/boot/config.txt # older releases
+if [[ -r /proc/device-tree/model ]]; then
+    echo "Board: $(tr -d '\0' < /proc/device-tree/model)"
+fi
 
 # --------------------------------------------------------------------------- #
 step "Installing system packages"
-apt-get update
-apt-get install -y alsa-utils python3 python3-numpy python3-rpi.gpio \
-    python3-spidev git dkms i2c-tools man-db
+# A single slow mirror shouldn't stop the install: retry, then carry on with
+# whatever package lists did download.
+for attempt in 1 2 3; do
+    if apt-get update; then
+        break
+    fi
+    warn "apt-get update failed (attempt ${attempt} of 3)."
+    if [[ $attempt -lt 3 ]]; then sleep 5; fi
+done
+if ! apt-get install -y alsa-utils python3 python3-numpy python3-spidev man-db; then
+    echo "Package install failed. Check the Pi's internet connection, run"
+    echo "  sudo apt-get update"
+    echo "and then run this installer again."
+    exit 1
+fi
+# RPi.GPIO: keep whatever already provides it; newer releases ship the
+# drop-in replacement python3-rpi-lgpio instead of python3-rpi.gpio.
+if python3 -c "import RPi.GPIO" 2>/dev/null; then
+    echo "RPi.GPIO is already installed."
+else
+    apt-get install -y python3-rpi.gpio || apt-get install -y python3-rpi-lgpio \
+        || warn "Could not install RPi.GPIO - the button won't work until it is installed."
+fi
 
 # --------------------------------------------------------------------------- #
 step "Enabling I2C and SPI (codec control + LEDs)"
@@ -54,33 +84,97 @@ if command -v raspi-config >/dev/null 2>&1; then
     raspi-config nonint do_i2c 0
     raspi-config nonint do_spi 0
 else
-    warn "raspi-config not found - enable I2C and SPI manually."
+    for param in i2c_arm spi; do
+        if ! grep -q "^dtparam=${param}=on" "$CONFIG"; then
+            printf '\n[all]\ndtparam=%s=on\n' "$param" >> "$CONFIG"
+        fi
+    done
+    REBOOT_NEEDED=1
 fi
 
 # --------------------------------------------------------------------------- #
-if [[ $INSTALL_DRIVER -eq 1 ]]; then
-    step "Installing ReSpeaker 2-Mic (seeed-voicecard / WM8960) driver"
-    if arecord -l 2>/dev/null | grep -qiE "seeed|wm8960"; then
-        echo "Sound card already detected - skipping driver install."
-    else
-        apt-get install -y "linux-headers-$(uname -r)" 2>/dev/null \
-            || apt-get install -y raspberrypi-kernel-headers \
-            || warn "Could not install kernel headers; the driver build may fail."
+if [[ $SETUP_DRIVER -eq 1 ]]; then
+    # The HAT's WM8960 chip is supported by the kernel itself. The old
+    # seeed-voicecard driver never starts the chip's clock on newer kernels
+    # (playback fails with "Input/output error"), so it is removed if present.
+    step "Setting up the HAT's sound card (built-in WM8960 driver)"
+    if systemctl list-unit-files seeed-voicecard.service 2>/dev/null | grep -q "^seeed-voicecard"; then
+        systemctl disable --now seeed-voicecard.service 2>/dev/null || true
+        echo "Disabled the old seeed-voicecard service."
+    fi
+    if command -v dkms >/dev/null && dkms status 2>/dev/null | grep -q seeed-voicecard; then
+        dkms remove seeed-voicecard/0.3 --all || warn "Could not remove the seeed DKMS module."
+    fi
+    if [[ -f /etc/modules ]]; then
+        sed -i '/^snd-soc-seeed-voicecard$/d;/^snd-soc-ac108$/d' /etc/modules
+    fi
 
-        build_dir="$(mktemp -d)"
-        git clone "$DRIVER_REPO" "${build_dir}/seeed-voicecard"
-        cd "${build_dir}/seeed-voicecard"
-        # The repo keeps one branch per kernel series, e.g. v6.6, v6.1, v5.15
-        kbranch="v$(uname -r | cut -d. -f1,2)"
-        if git ls-remote --exit-code --heads origin "$kbranch" >/dev/null; then
-            git checkout "$kbranch"
-        else
-            warn "No driver branch for kernel ${kbranch}; using the default branch."
-        fi
-        ./install.sh
-        cd "$SRC_DIR"
-        rm -rf "$build_dir"
+    overlay_dir="$(dirname "$CONFIG")/overlays"
+    if [[ ! -f "${overlay_dir}/wm8960-soundcard.dtbo" ]]; then
+        warn "This kernel has no wm8960-soundcard overlay. Update the Pi with"
+        warn "  sudo apt full-upgrade && sudo reboot   then run this installer again."
+    fi
+    if grep -q "^dtoverlay=wm8960-soundcard" "$CONFIG"; then
+        echo "Already enabled in ${CONFIG}."
+    else
+        # [all] makes sure the line isn't caught inside a model-specific section
+        printf '\n[all]\n%s\n' "$OVERLAY_LINE" >> "$CONFIG"
+        echo "Added to ${CONFIG}: ${OVERLAY_LINE}"
         REBOOT_NEEDED=1
+    fi
+
+    # Headphone output and microphone boost start switched off with this
+    # driver. This one-time service turns them on once the card exists
+    # (right away if it already does, otherwise at the next boot).
+    step "Setting the HAT's volume levels"
+    cat > "$LEVELS_SCRIPT" <<EOF
+#!/usr/bin/env bash
+# Installed by GSP-2026 install.sh: turns on the WM8960's headphone output
+# and microphones, saves the levels, then disables its own service.
+exec >>/var/log/gsp-audio-levels.log 2>&1
+echo "--- \$(date)"
+for _ in \$(seq 30); do
+    grep -q "\\[${CARD}" /proc/asound/cards && break
+    sleep 1
+done
+if ! grep -q "\\[${CARD}" /proc/asound/cards; then
+    echo "Card ${CARD} not found - leaving the service enabled to retry next boot."
+    exit 0
+fi
+set_ctl() { amixer -q -c ${CARD} sset "\$@" || echo "could not set: \$*"; }
+set_ctl 'Left Output Mixer PCM' on
+set_ctl 'Right Output Mixer PCM' on
+set_ctl 'Playback' 100%
+set_ctl 'Headphone' 90%
+set_ctl 'Speaker' 90%
+set_ctl 'Left Boost Mixer LINPUT1' on
+set_ctl 'Right Boost Mixer RINPUT1' on
+set_ctl 'Left Input Mixer Boost' on
+set_ctl 'Right Input Mixer Boost' on
+set_ctl 'Capture' 80% cap
+alsactl store
+systemctl disable gsp-audio-levels.service
+echo "Levels set and saved."
+EOF
+    chmod 755 "$LEVELS_SCRIPT"
+    cat > "$LEVELS_UNIT" <<EOF
+[Unit]
+Description=GSP-2026: set ReSpeaker HAT volume levels once
+After=sound.target alsa-restore.service
+
+[Service]
+Type=oneshot
+ExecStart=${LEVELS_SCRIPT}
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    systemctl daemon-reload
+    systemctl enable gsp-audio-levels.service
+    if grep -q "\[${CARD}" /proc/asound/cards 2>/dev/null; then
+        "$LEVELS_SCRIPT" && echo "Levels set now (log: /var/log/gsp-audio-levels.log)."
+    else
+        echo "Levels will be set at the next boot (log: /var/log/gsp-audio-levels.log)."
     fi
 fi
 
@@ -98,7 +192,7 @@ RECORDINGS_DIR="${TARGET_HOME}/recordings"
 echo "Recordings folder: ${RECORDINGS_DIR}"
 
 # --------------------------------------------------------------------------- #
-step "Installing the ${CMD_NAME} command"
+step "Installing the ${CMD_NAME} command and manual"
 install -d -m 755 "$INSTALL_DIR"
 install -m 755 "${SRC_DIR}/respeaker_analyzer.py" "${INSTALL_DIR}/respeaker_analyzer.py"
 
@@ -127,12 +221,7 @@ if [[ "$TARGET_USER_EXISTS" -eq 1 ]]; then
 fi
 
 # --------------------------------------------------------------------------- #
-# ~/.asoundrc overrides the system default, and the seeed-voicecard boot
-# service (which rewrites /etc/asound.conf) never touches it.
 step "Making the HAT the default sound device for ${TARGET_USER}"
-HAT_CARD="$(grep -oE '\[(seeed[^] ]*|wm8960[^] ]*) *\]' /proc/asound/cards 2>/dev/null \
-    | head -1 | tr -d '[] ' || true)"
-HAT_CARD="${HAT_CARD:-seeed2micvoicec}"     # driver just installed: name after reboot
 if [[ "$TARGET_USER_EXISTS" -eq 1 ]]; then
     asoundrc="${TARGET_HOME}/.asoundrc"
     if [[ -f "$asoundrc" ]] && ! grep -q "GSP-2026" "$asoundrc"; then
@@ -141,19 +230,19 @@ if [[ "$TARGET_USER_EXISTS" -eq 1 ]]; then
     fi
     cat > "$asoundrc" <<EOF
 # Written by GSP-2026 install.sh: play and record through the ReSpeaker HAT
-# (card "${HAT_CARD}") by default. Delete this file to go back to the Pi's
+# (card "${CARD}") by default. Delete this file to go back to the Pi's
 # own audio output.
 pcm.!default {
     type plug
-    slave.pcm "hw:${HAT_CARD}"
+    slave.pcm "hw:${CARD}"
 }
 ctl.!default {
     type hw
-    card "${HAT_CARD}"
+    card "${CARD}"
 }
 EOF
     chown "$TARGET_USER:$target_group" "$asoundrc"
-    echo "Sound now plays through the HAT (card ${HAT_CARD}) for ${TARGET_USER}."
+    echo "Sound now plays through the HAT for ${TARGET_USER}."
 else
     warn "User ${TARGET_USER} not found - default sound device not changed."
 fi
@@ -173,8 +262,14 @@ echo "  ${CMD_NAME} --file x.wav analyze an existing recording"
 echo "  ${CMD_NAME} --play       play the newest recording through the HAT"
 echo
 if [[ $REBOOT_NEEDED -eq 1 ]]; then
-    warn "The sound card driver was just installed - reboot before first use:"
-    echo "  sudo reboot"
+    warn "A reboot is needed before the HAT's sound card appears."
+    if [[ -t 0 ]]; then
+        read -r -p "Reboot now? [Y/n] " answer || answer=n
+        if [[ ! "$answer" =~ ^[Nn] ]]; then
+            reboot
+        fi
+    fi
+    echo "Reboot when ready:  sudo reboot"
 else
     echo "Log out and back in (or reboot) once so the new group permissions apply."
 fi
