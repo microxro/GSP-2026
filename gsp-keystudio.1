@@ -1,0 +1,310 @@
+.TH GSP-KEYSTUDIO 1 "September 2026" "GSP-2026" "User Commands"
+.SH NAME
+gsp-keystudio \- record and analyze audio with the Keyestudio ReSpeaker 2-Mic Pi HAT
+.SH SYNOPSIS
+.B gsp-keystudio
+.RB [ \-\-device
+.IR DEVICE ]
+.br
+.B gsp-keystudio \-\-now
+.RB [ \-\-device
+.IR DEVICE ]
+.br
+.B gsp-keystudio \-\-file
+.I FILE.wav
+.br
+.B gsp-keystudio \-h
+.SH DESCRIPTION
+.B gsp-keystudio
+turns a Raspberry Pi 3/4 with a Keyestudio ReSpeaker 2-Mic Pi HAT into a
+button-operated recorder.
+Tap the button on the HAT to record 3 seconds and get a frequency and
+volume analysis, or double-tap it to record for as long as you like.
+.PP
+Every recording is saved as a WAV file (16-bit, 16000 Hz, 2 channels) in
+the recordings folder that the installer created, normally
+.IR /home/pranav/recordings .
+.PP
+With no options, the program waits for button taps until you press
+.BR Ctrl+C .
+.SH BUTTON CONTROLS
+The button is the small push button built into the HAT (GPIO17).
+.TP
+.B Tap once
+Records 3 seconds, prints the analysis report (see
+.BR "THE ANALYSIS REPORT" ),
+and saves the audio as
+.IR rec_YYYYmmdd_HHMMSS_mmm.wav .
+The recording starts about 0.4 seconds after you let go of the button,
+because the program first checks whether a second tap is coming.
+.TP
+.B Double-tap
+Starts a session recording with no time limit and no analysis.
+The LEDs turn magenta and the program prints
+.IR "Session recording started" .
+.TP
+.B Double-tap again
+Stops the session and saves it as
+.IR session_YYYYmmdd_HHMMSS_mmm.wav .
+The program prints the file name and its length in seconds.
+.TP
+.B Single tap during a session
+Ignored; the program prints a reminder to double-tap to stop.
+.TP
+.B Ctrl+C
+Quits.
+A session that is still recording is saved first.
+.PP
+Two taps count as a double-tap when the second press starts within
+0.4 seconds of letting go of the first.
+A quick third tap right after a double-tap is ignored.
+Holding the button down does nothing until it is released.
+.SH OPTIONS
+.TP
+.B \-\-now
+Record 3 seconds immediately, without waiting for the button, then
+analyze and save it.
+.TP
+.BI \-\-file " FILE.wav"
+Analyze an existing 16-bit WAV file.
+Nothing is recorded or saved.
+.TP
+.BI \-\-device " DEVICE"
+Use this ALSA capture device (for example
+.IR plughw:1,0 )
+instead of finding the ReSpeaker sound card automatically.
+.TP
+.BR \-h ", " \-\-help
+Show a short help message and exit.
+.SH THE ANALYSIS REPORT
+Each single-tap (or
+.BR \-\-now )
+recording prints a report with exact values, a rating from low to high,
+the rating's level number (for example "level 5 of 7") and value range,
+and a
+.B LOW [####\-\-\-\-] HIGH
+meter with a score from 0 to 100.
+.SS Volume
+.TP
+.B RMS level
+Average loudness in dBFS (0 dBFS is the loudest the microphones can
+record; quieter sounds are more negative).
+.TP
+.B Peak level
+Loudest single moment, in dBFS.
+.TP
+.B Estimated SPL
+Rough real-world loudness in dB.
+It is approximate until calibrated against a sound level meter (the
+.B SPL_OFFSET
+setting in the script).
+.TP
+.B Rating
+From the RMS level:
+SILENT (below \-60 dBFS),
+VERY QUIET (\-60 to \-45),
+QUIET (\-45 to \-35),
+MODERATE (\-35 to \-25),
+LOUD (\-25 to \-15),
+VERY LOUD (\-15 to \-6),
+EXTREME / CLIPPING (\-6 and above).
+.SS Frequency
+.TP
+.B Dominant freq
+The strongest frequency in the recording, in Hz.
+.TP
+.B Spectral center
+The "center of mass" of the sound; higher means a brighter sound.
+.TP
+.B Top peaks
+The three strongest frequencies, with each one's strength relative to
+the strongest (+0.0 dB).
+.TP
+.B Band energy
+Percent of the sound's energy in Low (20\-250 Hz), Mid (250\-4000 Hz) and
+High (4000 Hz and above).
+.TP
+.B Rating
+From the dominant frequency:
+VERY LOW (below 60 Hz),
+LOW (60\-250),
+MID-LOW (250\-1000),
+MID (1000\-2000),
+MID-HIGH (2000\-4000),
+HIGH (4000\-6000),
+VERY HIGH (6000 Hz and above).
+.PP
+If the recording is SILENT, the frequency part is skipped because there
+is not enough sound to measure.
+.SH LEDS
+The three LEDs on the HAT show what the program is doing:
+.TP
+.B Red
+Recording 3 seconds.
+.TP
+.B Blue
+Analyzing.
+.TP
+.B Green to red
+The result's loudness (green is quiet, red is loud).
+.TP
+.B Magenta
+A session recording is in progress.
+.TP
+.B Off
+The session has been saved, or the program has quit.
+.SH PLAYING BACK RECORDINGS
+Plug headphones or a speaker into the HAT's headphone jack, then:
+.PP
+.nf
+.RS
+ls \-lt ~/recordings/                         # list, newest first
+aplay ~/recordings/session_20260928_033906_241.wav
+aplay "$(ls \-t ~/recordings/*.wav | head \-1)" # play the newest
+.RE
+.fi
+.PP
+To play through the HAT instead of the Pi's own audio output, add
+.BR "\-D plughw:seeed2micvoicec" .
+Run
+.B aplay \-l
+to list the sound cards.
+.PP
+To listen on another computer, run this on that computer to copy the
+files over, then open them in any media player:
+.PP
+.nf
+.RS
+scp pranav@<pi-address>:recordings/*.wav .
+.RE
+.fi
+.PP
+To analyze a saved recording again:
+.PP
+.nf
+.RS
+gsp-keystudio \-\-file ~/recordings/rec_20260928_033900_838.wav
+.RE
+.fi
+.SH INSTALLATION
+From the project folder, run once:
+.PP
+.nf
+.RS
+cd ~/GSP-2026
+sudo ./install.sh
+sudo reboot        # first time only, for the sound card driver
+.RE
+.fi
+.PP
+The installer does the following:
+.IP \(bu 2
+Installs the needed packages (alsa-utils, numpy, the GPIO and SPI
+libraries, and the tools to build the driver).
+.IP \(bu 2
+Turns on I2C and SPI.
+.IP \(bu 2
+Builds the ReSpeaker sound card driver for the running kernel, unless
+the card is already detected or
+.B \-\-no\-driver
+is given.
+.IP \(bu 2
+Adds your user to the audio, gpio, spi and i2c groups.
+.IP \(bu 2
+Creates the recordings folder.
+.IP \(bu 2
+Installs this command and this manual page.
+.PP
+To update after
+.BR "git pull" ,
+run
+.B sudo ./install.sh
+again.
+The installer can safely be run more than once, and existing recordings
+are kept.
+.SH FILES
+.TP
+.I /home/pranav/recordings/
+The recordings folder, created by the installer.
+.RS
+.TP
+.I rec_YYYYmmdd_HHMMSS_mmm.wav
+3-second recordings that were analyzed.
+.TP
+.I session_YYYYmmdd_HHMMSS_mmm.wav
+Double-tap recordings.
+.RE
+.TP
+.I /usr/local/bin/gsp-keystudio
+This command.
+It sets
+.B GSP_RECORDINGS_DIR
+and runs the program.
+.TP
+.I /opt/gsp-keystudio/respeaker_analyzer.py
+The program itself.
+.TP
+.I /usr/local/share/man/man1/gsp-keystudio.1
+This manual page.
+.SH ENVIRONMENT
+.TP
+.B GSP_RECORDINGS_DIR
+Folder to save recordings in.
+The
+.B gsp-keystudio
+command sets it to the folder the installer created; if it is unset,
+.I /home/pranav/recordings
+is used.
+.SH EXIT STATUS
+.TP
+.B 0
+Success, including quitting with Ctrl+C.
+.TP
+.B 1
+An error, printed as
+.IR "Error: ..." ,
+such as a missing file or a failed recording.
+.TP
+.B 2
+An unknown or invalid option.
+.SH TROUBLESHOOTING
+.TP
+.B Nothing happens when I tap the button
+Log out and back in (or reboot) once after installing, so the new gpio
+group membership takes effect.
+.TP
+.B "No sound card / arecord failed"
+Run
+.BR "arecord \-l" ;
+the list should show a seeed or wm8960 card.
+If it doesn't, reboot, or run
+.B sudo ./install.sh
+again.
+.TP
+.B Recordings are silent or very quiet
+Raise the capture volume with
+.B alsamixer
+(press F6 to pick the seeed card, then F4 for capture).
+.TP
+.B "The installer stops with \(lqSome index files failed to download\(rq"
+A package server did not respond.
+Run
+.B sudo apt\-get update
+again, then re-run the installer.
+.SH EXAMPLES
+.TP
+.B gsp-keystudio
+Wait for button taps.
+.TP
+.B gsp-keystudio \-\-now
+Record and analyze 3 seconds right away.
+.TP
+.B gsp-keystudio \-\-file ~/recordings/rec_20260928_033900_838.wav
+Analyze a saved recording.
+.TP
+.B aplay \-D plughw:seeed2micvoicec ~/recordings/session_20260928_033906_241.wav
+Play a session recording through the HAT.
+.SH SEE ALSO
+.BR arecord (1),
+.BR aplay (1),
+.BR alsamixer (1)

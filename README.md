@@ -1,5 +1,7 @@
 # ReSpeaker 2-Mic HAT – Audio Recorder & Analyzer
 
+After installing, run `man gsp-keystudio` for the full manual: button controls, the analysis report, LEDs, playback, files and troubleshooting.
+
 `respeaker_analyzer.py` waits for the HAT's button (GPIO17). There are two ways to record, and every recording is saved.
 
 | Button | What happens | Saved as |
@@ -27,7 +29,7 @@ The installer:
 - builds the ReSpeaker driver for your kernel
 - adds your user to the audio/gpio/spi groups
 - creates the recordings folder (`/home/pranav/recordings/`) and points the command at it
-- creates the `gsp-keystudio` command
+- creates the `gsp-keystudio` command and its manual page (`man gsp-keystudio`)
 
 If the driver is already installed, use `--no-driver` to skip that step. After you pull new code, run the installer again to update the command.
 

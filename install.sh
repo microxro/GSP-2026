@@ -9,10 +9,11 @@
 set -euo pipefail
 
 CMD_NAME="gsp-keystudio"
-# GSP_INSTALL_DIR / GSP_BIN_PATH can override
+# GSP_INSTALL_DIR / GSP_BIN_PATH / GSP_MAN_DIR can override
 # these locations; the defaults below are unchanged for a normal install.
 INSTALL_DIR="${GSP_INSTALL_DIR:-/opt/gsp-keystudio}"
 BIN_PATH="${GSP_BIN_PATH:-/usr/local/bin/${CMD_NAME}}"
+MAN_DIR="${GSP_MAN_DIR:-/usr/local/share/man/man1}"
 DRIVER_REPO="https://github.com/HinTak/seeed-voicecard"
 SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TARGET_USER="${SUDO_USER:-pranav}"
@@ -34,16 +35,18 @@ if [[ $EUID -ne 0 ]]; then
     echo "Please run as root:  sudo $0"
     exit 1
 fi
-if [[ ! -f "${SRC_DIR}/respeaker_analyzer.py" ]]; then
-    echo "respeaker_analyzer.py not found next to this installer (${SRC_DIR})."
-    exit 1
-fi
+for f in respeaker_analyzer.py "${CMD_NAME}.1"; do
+    if [[ ! -f "${SRC_DIR}/${f}" ]]; then
+        echo "${f} not found next to this installer (${SRC_DIR})."
+        exit 1
+    fi
+done
 
 # --------------------------------------------------------------------------- #
 step "Installing system packages"
 apt-get update
 apt-get install -y alsa-utils python3 python3-numpy python3-rpi.gpio \
-    python3-spidev git dkms i2c-tools
+    python3-spidev git dkms i2c-tools man-db
 
 # --------------------------------------------------------------------------- #
 step "Enabling I2C and SPI (codec control + LEDs)"
@@ -107,6 +110,10 @@ exec python3 "${INSTALL_DIR}/respeaker_analyzer.py" "\$@"
 EOF
 chmod 755 "$BIN_PATH"
 
+install -d -m 755 "$MAN_DIR"
+install -m 644 "${SRC_DIR}/${CMD_NAME}.1" "${MAN_DIR}/${CMD_NAME}.1"
+mandb -q >/dev/null 2>&1 || true      # refresh the index for man -k / apropos
+
 # --------------------------------------------------------------------------- #
 step "Giving ${TARGET_USER} access to audio, GPIO, SPI and the recordings folder"
 if [[ "$TARGET_USER_EXISTS" -eq 1 ]]; then
@@ -123,6 +130,7 @@ fi
 step "Done"
 echo "Command installed: ${BIN_PATH}"
 echo "Recordings are saved to: ${RECORDINGS_DIR}"
+echo "Full manual: man ${CMD_NAME}"
 echo
 echo "Usage (from any folder):"
 echo "  ${CMD_NAME}              tap the button once: record 3 s and show results"
