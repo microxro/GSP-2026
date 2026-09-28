@@ -39,6 +39,7 @@ If the driver is already installed, use `--no-driver` to skip that step. After y
 gsp-keystudio               # waits for the button: tap = 3 s + analysis, double-tap = session
 gsp-keystudio --now         # records 3 s right away and analyzes (also saved)
 gsp-keystudio --file x.wav  # analyzes an existing WAV
+gsp-keystudio --play        # plays the newest recording through the HAT
 ```
 The script detects the sound card automatically; use `--device plughw:N,0` to override it.
 
@@ -48,11 +49,13 @@ The SPL figure is approximate (`SPL_OFFSET` in the script). To get accurate numb
 Every recording is saved in the folder the installer made: `/home/pranav/recordings/`.
 
 ```bash
-ls -lt /home/pranav/recordings/                               # list them, newest first
-aplay /home/pranav/recordings/session_20260928_033906_241.wav  # play one
-aplay "$(ls -t /home/pranav/recordings/*.wav | head -1)"       # play the newest
+gsp-keystudio --play                                      # play the newest recording
+ls -lt /home/pranav/recordings/                           # list them, newest first
+gsp-keystudio --play session_20260928_033906_241.wav      # play a chosen one
 ```
-Plug headphones or a speaker into the ReSpeaker HAT's headphone jack. The installer makes the HAT the default sound device (it writes `~/.asoundrc`), so `aplay` plays through the HAT without any extra options. To use the Pi's own audio output instead, add `-D plughw:Headphones`, or delete `~/.asoundrc`. Run `aplay -l` to see the card names.
+Plug headphones or a speaker into the ReSpeaker HAT's headphone jack. `gsp-keystudio --play` always plays through the HAT; press Ctrl+C to stop.
+
+You can also play files with `aplay <file>`. The installer makes the HAT the default sound device (it writes `~/.asoundrc`), so `aplay` also plays through the HAT without any extra options. To use the Pi's own audio output instead, add `-D plughw:Headphones`, or delete `~/.asoundrc`. Run `aplay -l` to see the card names.
 
 To listen on another computer, copy the files over, for example `scp pranav@<pi-address>:recordings/*.wav .`, and open them in any media player.
 

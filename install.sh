@@ -170,6 +170,7 @@ echo "  ${CMD_NAME}              double-tap the button: start a session recordin
 echo "                          double-tap again to stop and save it"
 echo "  ${CMD_NAME} --now        record right away"
 echo "  ${CMD_NAME} --file x.wav analyze an existing recording"
+echo "  ${CMD_NAME} --play       play the newest recording through the HAT"
 echo
 if [[ $REBOOT_NEEDED -eq 1 ]]; then
     warn "The sound card driver was just installed - reboot before first use:"

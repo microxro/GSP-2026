@@ -19,6 +19,8 @@ Usage:
   python3 respeaker_analyzer.py               # wait for button taps
   python3 respeaker_analyzer.py --now         # record once immediately
   python3 respeaker_analyzer.py --file x.wav  # analyze an existing WAV
+  python3 respeaker_analyzer.py --play        # play the newest recording on the HAT
+  python3 respeaker_analyzer.py --play x.wav  # play a chosen recording
 """
 import argparse
 import datetime
@@ -577,15 +579,55 @@ def button_loop(device, leds):
         GPIO.cleanup()
 
 
+# --------------------------------------------------------------------------- #
+# Playback
+# --------------------------------------------------------------------------- #
+def newest_recording():
+    """Path of the most recently saved WAV in SAVE_DIR."""
+    try:
+        files = [os.path.join(SAVE_DIR, f) for f in os.listdir(SAVE_DIR) if f.endswith(".wav")]
+    except FileNotFoundError:
+        files = []
+    if not files:
+        raise RuntimeError(f"No recordings in {SAVE_DIR} yet.")
+    return max(files, key=os.path.getmtime)
+
+
+def play_recording(name, device):
+    """Play a recording (a path, a file name in SAVE_DIR, or the newest one)."""
+    path = name or newest_recording()
+    if not os.path.isfile(path) and os.path.isfile(os.path.join(SAVE_DIR, path)):
+        path = os.path.join(SAVE_DIR, path)
+    if not os.path.isfile(path):
+        raise RuntimeError(f"No such recording: {name}")
+    with wave.open(path, "rb") as wf:
+        seconds = wf.getnframes() / wf.getframerate()
+    print(f"Playing {path} ({seconds:.1f} s) - Ctrl+C to stop")
+    try:
+        result = subprocess.run(["aplay", "-q", "-D", device, path],
+                                stderr=subprocess.PIPE, text=True)
+    except KeyboardInterrupt:
+        print("\nStopped.")
+        return
+    if result.returncode != 0:
+        raise RuntimeError(f"aplay failed: {result.stderr.strip()}")
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--file", help="analyze an existing 16-bit WAV instead of recording")
     p.add_argument("--now", action="store_true", help="record once without the button")
+    p.add_argument("--play", nargs="?", const="", metavar="FILE",
+                   help="play a recording through the HAT (default: the newest one)")
     p.add_argument("--device", help="ALSA device (default: auto-detect ReSpeaker)")
     args = p.parse_args()
 
     try:
+        if args.play is not None:
+            play_recording(args.play, args.device or find_card())
+            return
+
         if args.file:
             report(analyze(*load_wav(args.file)))
             return
