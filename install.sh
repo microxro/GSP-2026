@@ -41,9 +41,12 @@ fi
 
 # --------------------------------------------------------------------------- #
 step "Installing system packages"
-apt-get update
-apt-get install -y alsa-utils python3 python3-numpy python3-rpi.gpio \
-    python3-spidev git dkms i2c-tools
+# One unreachable mirror (e.g. an extra armhf source timing out) shouldn't
+# stop the install; the lists that did download are still used.
+apt-get update || warn "Some package lists failed to download - continuing with the ones that did."
+apt-get install -y alsa-utils python3 python3-numpy python3-spidev git dkms i2c-tools
+# RPi.GPIO: newer Raspberry Pi OS releases ship it as python3-rpi-lgpio
+apt-get install -y python3-rpi.gpio || apt-get install -y python3-rpi-lgpio
 
 # --------------------------------------------------------------------------- #
 step "Enabling I2C and SPI (codec control + LEDs)"
