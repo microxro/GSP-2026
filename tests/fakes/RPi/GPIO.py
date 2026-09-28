@@ -8,6 +8,12 @@ to :func:`input` pops the next value. Once the sequence is exhausted,
 every subsequent call, forever -- so a test **must** end its sequence with
 the :data:`KEY_INTERRUPT` sentinel to make ``input()`` raise
 ``KeyboardInterrupt`` and stop an otherwise-infinite polling loop.
+
+For timing-based tests (tap / double-tap detection) a test can instead
+install a level function with :func:`set_level_function`: once the scripted
+sequence is empty, each input() call returns ``fn()`` -- typically the level
+at the current (fake) ``time.monotonic()``. It may return
+:data:`KEY_INTERRUPT` too, and must do so eventually to end the loop.
 """
 
 BCM = "BCM"
@@ -30,14 +36,22 @@ calls = []
 
 _sequence = []
 _default = HIGH
+_level_fn = None
 
 
 def reset(default=HIGH):
     """Clear all state. Call at the start of every test that uses this fake."""
-    global _default
+    global _default, _level_fn
     calls.clear()
     _sequence.clear()
     _default = default
+    _level_fn = None
+
+
+def set_level_function(fn):
+    """Make input() return fn() whenever the scripted sequence is empty."""
+    global _level_fn
+    _level_fn = fn
 
 
 def set_sequence(seq):
@@ -57,6 +71,8 @@ def setup(pin, direction, pull_up_down=None):
 def input(pin):  # noqa: A001 - mirrors real RPi.GPIO's name
     if _sequence:
         val = _sequence.pop(0)
+    elif _level_fn is not None:
+        val = _level_fn()
     else:
         val = _default
     if val == KEY_INTERRUPT:
