@@ -9,8 +9,10 @@
 set -euo pipefail
 
 CMD_NAME="gsp-keystudio"
-INSTALL_DIR="/opt/gsp-keystudio"
-BIN_PATH="/usr/local/bin/${CMD_NAME}"
+# GSP_INSTALL_DIR / GSP_BIN_PATH let tests (or an alternate prefix) override
+# these locations; the defaults below are unchanged for a normal install.
+INSTALL_DIR="${GSP_INSTALL_DIR:-/opt/gsp-keystudio}"
+BIN_PATH="${GSP_BIN_PATH:-/usr/local/bin/${CMD_NAME}}"
 DRIVER_REPO="https://github.com/HinTak/seeed-voicecard"
 SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TARGET_USER="${SUDO_USER:-pranav}"
@@ -20,7 +22,7 @@ REBOOT_NEEDED=0
 for arg in "$@"; do
     case "$arg" in
         --no-driver) INSTALL_DRIVER=0 ;;
-        -h|--help) sed -n '2,9p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,8p' "$0"; exit 0 ;;
         *) echo "Unknown option: $arg"; exit 1 ;;
     esac
 done
