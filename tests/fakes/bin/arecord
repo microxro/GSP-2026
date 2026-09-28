@@ -14,12 +14,34 @@ stand in for several real-world `arecord` situations:
 For a real recording invocation (`-D device -f S16_LE -r RATE -c CH -d SEC
 path`), it writes a valid 16-bit PCM WAV file containing a simple tone,
 with the requested rate/channels/duration, to the given path.
+
+Without `-d` it records open-ended, like real arecord: it writes a WAV
+header whose length fields are the 0x7fffffff "unknown length" placeholder,
+then appends tone frames in real time (50 ms chunks, flushed) until it gets
+SIGINT or SIGTERM. On that signal it finalizes the header (correct RIFF and
+data sizes), prints "Aborted by signal ..." to stderr and exits. Extra knobs
+for this mode:
+
+  FAKE_ARECORD_SIGINT_EXIT  exit code after a signal stop (default 0; real
+                            alsa-utils versions may exit 1 even though the
+                            WAV was finalized correctly)
+  FAKE_ARECORD_DIE_AFTER    seconds of audio to write before dying on its own
+                            (device error): prints FAKE_ARECORD_DIE_MSG to
+                            stderr, exits 1, header NOT finalized
+  FAKE_ARECORD_DIE_MSG      stderr text for the above
+  FAKE_ARECORD_IGNORE_SIGINT  if set, SIGINT is ignored (a hung arecord) and
+                            SIGTERM kills it WITHOUT finalizing the header
 """
 import math
 import os
+import signal
 import struct
 import sys
+import time
 import wave
+
+PLACEHOLDER = 0x7FFFFFFF  # what arecord writes when the length is unknown
+CHUNK_SECONDS = 0.05
 
 LISTINGS = {
     "seeed": (
@@ -57,6 +79,57 @@ def die(msg, code):
     sys.exit(code)
 
 
+def tone_bytes(start, n_frames, rate, channels, freq=440.0, amp=12000):
+    out = bytearray()
+    for s in range(start, start + n_frames):
+        val = int(amp * math.sin(2 * math.pi * freq * s / rate))
+        out += struct.pack("<h", val) * channels
+    return bytes(out)
+
+
+def wav_header(rate, channels, data_bytes):
+    return (b"RIFF" + struct.pack("<I", min(36 + data_bytes, 0xFFFFFFFF)) + b"WAVE"
+            + b"fmt " + struct.pack("<IHHIIHH", 16, 1, channels, rate,
+                                    rate * channels * 2, channels * 2, 16)
+            + b"data" + struct.pack("<I", data_bytes))
+
+
+def stream(path, rate, channels):
+    """Open-ended recording until SIGINT/SIGTERM (see module docstring)."""
+    stop = []
+    ignore_int = bool(os.environ.get("FAKE_ARECORD_IGNORE_SIGINT"))
+
+    def on_signal(sig, _frame):
+        if sig == signal.SIGTERM and ignore_int:
+            os._exit(143)                    # "killed": header left un-finalized
+        stop.append(sig)
+
+    signal.signal(signal.SIGINT, signal.SIG_IGN if ignore_int else on_signal)
+    signal.signal(signal.SIGTERM, on_signal)
+
+    die_after = os.environ.get("FAKE_ARECORD_DIE_AFTER")
+    die_frames = None if die_after is None else int(float(die_after) * rate)
+    chunk = int(rate * CHUNK_SECONDS)
+    written = 0
+    with open(path, "wb") as f:
+        f.write(wav_header(rate, channels, PLACEHOLDER))
+        f.flush()
+        while not stop:
+            if die_frames is not None and written >= die_frames:
+                f.flush()
+                die(os.environ.get("FAKE_ARECORD_DIE_MSG",
+                                   "arecord: pcm_read:2178: read error: Input/output error"), 1)
+            n = chunk if die_frames is None else min(chunk, die_frames - written)
+            f.write(tone_bytes(written, n, rate, channels))
+            f.flush()
+            written += n
+            time.sleep(CHUNK_SECONDS)
+        f.seek(0)
+        f.write(wav_header(rate, channels, written * channels * 2))
+    name = "Interrupt" if stop[0] == signal.SIGINT else "Terminated"
+    die(f"Aborted by signal {name}...", int(os.environ.get("FAKE_ARECORD_SIGINT_EXIT", "0")))
+
+
 def main():
     args = sys.argv[1:]
 
@@ -71,7 +144,7 @@ def main():
 
     rate = 16000
     channels = 2
-    seconds = 3
+    seconds = None
     path = None
 
     i = 0
@@ -101,20 +174,14 @@ def main():
     if not path:
         die("fake arecord: no output path given", 1)
 
-    n_frames = int(rate * seconds)
-    freq = 440.0
-    amp = 12000
-    samples = bytearray()
-    for s in range(n_frames):
-        val = int(amp * math.sin(2 * math.pi * freq * s / rate))
-        one_frame = struct.pack("<h", val) * channels
-        samples += one_frame
+    if seconds is None:
+        stream(path, rate, channels)
 
     with wave.open(path, "wb") as wf:
         wf.setnchannels(channels)
         wf.setsampwidth(2)
         wf.setframerate(rate)
-        wf.writeframes(bytes(samples))
+        wf.writeframes(tone_bytes(0, int(rate * seconds), rate, channels))
 
     sys.exit(0)
 

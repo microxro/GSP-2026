@@ -2,13 +2,21 @@
 """
 ReSpeaker 2-Mic Pi HAT (Keyestudio) - button-triggered audio recorder/analyzer.
 
-Press the on-board button (GPIO17) -> record 3 seconds -> analyze:
+Tap the on-board button (GPIO17) once -> record 3 seconds -> analyze:
   * Frequency: dominant pitch, spectral centroid, band energy (low/mid/high)
   * Volume:    RMS and peak level in dBFS, with an estimated dB SPL
 Each result is rated on a LOW -> HIGH scale and printed as a bar meter.
 
+Double-tap the button -> start recording (LEDs magenta, no time limit).
+Double-tap again      -> stop and save that recording (no analysis).
+
+Every recording is saved as a WAV in $GSP_RECORDINGS_DIR (set by the
+gsp-keystudio command), or /home/pranav/recordings if that is not set:
+  rec_YYYYmmdd_HHMMSS_mmm.wav      3-second recordings that were analyzed
+  session_YYYYmmdd_HHMMSS_mmm.wav  double-tap recordings
+
 Usage:
-  python3 respeaker_analyzer.py               # wait for button presses
+  python3 respeaker_analyzer.py               # wait for button taps
   python3 respeaker_analyzer.py --now         # record once immediately
   python3 respeaker_analyzer.py --file x.wav  # analyze an existing WAV
 """
@@ -16,8 +24,11 @@ import argparse
 import datetime
 import os
 import re
+import signal
+import struct
 import subprocess
 import sys
+import tempfile
 import time
 import wave
 
@@ -27,7 +38,14 @@ BUTTON_PIN = 17            # ReSpeaker 2-Mic HAT user button (BCM numbering)
 RECORD_SECONDS = 3
 SAMPLE_RATE = 16000        # WM8960 codec supports 8k-48k; 16k covers voice + 8 kHz highs
 CHANNELS = 2
-SAVE_DIR = "/home/pranav/recordings"
+# Where every recording is saved. The installed gsp-keystudio wrapper exports
+# GSP_RECORDINGS_DIR (the folder the installer created).
+SAVE_DIR = os.environ.get("GSP_RECORDINGS_DIR") or "/home/pranav/recordings"
+DOUBLE_TAP_WINDOW = 0.4    # s: a 2nd press this soon after a release = double tap
+DEBOUNCE = 0.03            # s: a level change must still be there this much later
+POLL_INTERVAL = 0.02       # s: button polling period
+SESSION_STOP_TIMEOUT = 5   # s: wait for arecord to exit after each stop signal
+SESSION_COLOR = (255, 0, 255)  # magenta = double-tap recording in progress
 # dBFS -> dB SPL offset. ~94 dB SPL for 0 dBFS is a rough default for this
 # HAT at default capture gain; calibrate against a sound meter for accuracy.
 SPL_OFFSET = 94.0
@@ -104,12 +122,159 @@ def find_card():
     return "default"
 
 
-def record(path, device, seconds=RECORD_SECONDS):
+def recording_path(prefix):
+    """New file path in SAVE_DIR (created if missing), e.g. rec_20260928_030821_100.wav."""
+    os.makedirs(SAVE_DIR, exist_ok=True)
+    stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]  # ms: no overwrites
+    return os.path.join(SAVE_DIR, f"{prefix}_{stamp}.wav")
+
+
+def arecord_cmd(device, path, seconds=None):
     cmd = ["arecord", "-q", "-D", device, "-f", "S16_LE", "-r", str(SAMPLE_RATE),
-           "-c", str(CHANNELS), "-d", str(seconds), path]
-    result = subprocess.run(cmd, capture_output=True, text=True)
+           "-c", str(CHANNELS)]
+    if seconds is not None:
+        cmd += ["-d", str(seconds)]
+    return cmd + [path]
+
+
+def record(path, device, seconds=RECORD_SECONDS):
+    result = subprocess.run(arecord_cmd(device, path, seconds), capture_output=True, text=True)
     if result.returncode != 0:
         raise RuntimeError(f"arecord failed: {result.stderr.strip()}")
+
+
+# --------------------------------------------------------------------------- #
+# Session recording (double tap): open-ended arecord, stopped on request
+# --------------------------------------------------------------------------- #
+def start_session(device):
+    """Start an open-ended recording. Returns (proc, path).
+
+    arecord's stderr goes to a temp file (readable via session_stderr) rather
+    than a pipe, so a long session can never block on a full pipe buffer.
+    """
+    path = recording_path("session")
+    err = tempfile.TemporaryFile()
+    try:
+        proc = subprocess.Popen(arecord_cmd(device, path), stdin=subprocess.DEVNULL,
+                                stdout=subprocess.DEVNULL, stderr=err)
+    except OSError:
+        err.close()
+        raise
+    proc.stderr = err
+    return proc, path
+
+
+def session_stderr(proc):
+    """Whatever arecord wrote to stderr so far, as stripped text."""
+    f = getattr(proc, "stderr", None)
+    if f is None:
+        return ""
+    try:
+        f.seek(0)
+    except (OSError, ValueError):
+        pass
+    try:
+        data = f.read()
+    except (OSError, ValueError):
+        return ""
+    if isinstance(data, bytes):
+        data = data.decode(errors="replace")
+    return data.strip()
+
+
+def stop_session(proc, path):
+    """Stop a session recording and return the saved audio's duration (s).
+
+    SIGINT makes arecord finalize the WAV header. Some alsa-utils versions then
+    exit non-zero ("Aborted by signal Interrupt..."), so the exit code is not
+    used: success is judged by the file. If arecord ignores SIGINT it is
+    terminated, then killed; a header it never finalized is repaired by
+    finalize_wav. Raises RuntimeError if no audio was saved.
+    """
+    if proc.poll() is None:
+        proc.send_signal(signal.SIGINT)
+        for escalate in (proc.terminate, proc.kill, None):
+            try:
+                proc.wait(timeout=SESSION_STOP_TIMEOUT)
+                break
+            except subprocess.TimeoutExpired:
+                if escalate is None:
+                    break          # unkillable (stuck in the driver): don't hang
+                escalate()
+    err = session_stderr(proc)
+    if getattr(proc, "stderr", None) is not None:
+        try:
+            proc.stderr.close()
+        except (OSError, ValueError):
+            pass
+    duration = finalize_wav(path)
+    if duration is None:
+        raise RuntimeError("Session recording failed - no audio was saved"
+                           + (f" (arecord: {err})" if err else "."))
+    return duration
+
+
+def _wav_layout(f):
+    """(channels, rate, sample_width, data_offset, declared_data_bytes) or None."""
+    head = f.read(12)
+    if len(head) < 12 or head[:4] != b"RIFF" or head[8:12] != b"WAVE":
+        return None
+    fmt = None
+    while True:
+        chunk = f.read(8)
+        if len(chunk) < 8:
+            return None
+        cid, size = chunk[:4], struct.unpack("<I", chunk[4:])[0]
+        if cid == b"fmt ":
+            body = f.read(size)
+            if len(body) < 16:
+                return None
+            _, channels, rate, _, _, bits = struct.unpack("<HHIIHH", body[:16])
+            fmt = (channels, rate, bits // 8)
+            f.seek(size & 1, 1)
+        elif cid == b"data":
+            if fmt is None:
+                return None
+            return fmt + (f.tell(), size)
+        else:
+            f.seek(size + (size & 1), 1)
+
+
+def finalize_wav(path):
+    """Make a recorder-written WAV consistent and return its duration in s.
+
+    If the header claims more audio than the file holds (arecord was killed
+    before it could finalize, so the length is still a huge placeholder), the
+    length fields are rewritten from the file size. A missing file, or one with
+    no valid header or no audio frames, is removed and None is returned.
+    """
+    try:
+        size = os.path.getsize(path)
+        with open(path, "r+b") as f:
+            layout = _wav_layout(f)
+            if layout is None:
+                frames = 0
+            else:
+                channels, rate, width, offset, declared = layout
+                frame = channels * width
+                available = size - offset
+                frames = min(declared, available) // frame if frame and rate else 0
+                if frames and declared > available:         # un-finalized header
+                    data_bytes = frames * frame
+                    f.truncate(offset + data_bytes)          # drop a partial frame
+                    f.seek(4)
+                    f.write(struct.pack("<I", offset + data_bytes - 8))
+                    f.seek(offset - 4)
+                    f.write(struct.pack("<I", data_bytes))
+    except OSError:
+        return None
+    if not frames:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+        return None
+    return frames / rate
 
 
 def load_wav(path):
@@ -244,10 +409,8 @@ def volume_color(idx):
 # --------------------------------------------------------------------------- #
 # Main
 # --------------------------------------------------------------------------- #
-def capture_and_analyze(device, leds, keep):
-    os.makedirs(SAVE_DIR, exist_ok=True)
-    stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]  # ms: no overwrites
-    path = os.path.join(SAVE_DIR, f"rec_{stamp}.wav")
+def capture_and_analyze(device, leds):
+    path = recording_path("rec")
 
     leds.show((255, 0, 0))                         # red = recording
     print(f"Recording {RECORD_SECONDS}s ...")
@@ -257,35 +420,159 @@ def capture_and_analyze(device, leds, keep):
     result = analyze(samples, rate)
     report(result)
     leds.show(volume_color(result["vol_idx"]))
-    if keep:
-        print(f"Saved: {path}")
-    else:
-        os.remove(path)
+    print(f"Saved: {path}")
     return result
 
 
-def button_loop(device, leds, keep):
+SINGLE_TAP = "single"
+DOUBLE_TAP = "double"
+
+
+class TapDetector:
+    """Turns debounced button levels + time.monotonic() stamps into taps.
+
+    Feed it every poll with update(pressed, now); it returns SINGLE_TAP,
+    DOUBLE_TAP or None.
+
+      IDLE     --press-->                               DOWN1
+      DOWN1    --release-->                             WAIT2 (window starts)
+      WAIT2    --press, gap <= window--> DOUBLE_TAP,    DOWN2
+      WAIT2    --no press, gap > window--> SINGLE_TAP,  IDLE
+      DOWN2    --release-->                             AFTER2 (window restarts)
+      AFTER2   --press, gap <= window-->                DOWN2  (extra tap absorbed)
+      AFTER2   --no press, gap > window-->              IDLE
+      HELD     --release-->                             IDLE   (see reset(True))
+
+    A double tap is reported as soon as the second press starts. Extra taps
+    in the same quick burst (a triple tap) are absorbed, so they can't
+    trigger a stray single tap. A press held down (even stuck LOW forever)
+    produces nothing until it is released.
+    """
+    IDLE, DOWN1, WAIT2, DOWN2, AFTER2, HELD = (
+        "IDLE", "DOWN1", "WAIT2", "DOWN2", "AFTER2", "HELD")
+
+    def __init__(self, window=DOUBLE_TAP_WINDOW):
+        self.window = window
+        self.state = self.IDLE
+        self.released_at = None
+
+    def reset(self, pressed):
+        """Forget any tap in progress. If the button is down right now, that
+        press is ignored until it is released."""
+        self.state = self.HELD if pressed else self.IDLE
+        self.released_at = None
+
+    def update(self, pressed, now):
+        st = self.state
+        if st in (self.WAIT2, self.AFTER2):
+            within = now - self.released_at <= self.window
+            if pressed and within:
+                self.state = self.DOWN2
+                return DOUBLE_TAP if st == self.WAIT2 else None
+            if not within:                         # window expired
+                self.state = self.DOWN1 if pressed else self.IDLE
+                return SINGLE_TAP if st == self.WAIT2 else None
+        elif st == self.IDLE:
+            if pressed:
+                self.state = self.DOWN1
+        elif not pressed:                          # DOWN1 / DOWN2 / HELD released
+            self.state = {self.DOWN1: self.WAIT2, self.DOWN2: self.AFTER2,
+                          self.HELD: self.IDLE}[st]
+            self.released_at = now
+        return None
+
+
+def _read_pressed(GPIO, was_pressed):
+    """Debounced button state: a change only counts if it is still there 30 ms later."""
+    pressed = GPIO.input(BUTTON_PIN) == GPIO.LOW
+    if pressed != was_pressed:
+        time.sleep(DEBOUNCE)
+        pressed = GPIO.input(BUTTON_PIN) == GPIO.LOW
+    return pressed
+
+
+def _begin_session(device, leds):
+    try:
+        session = start_session(device)
+    except OSError as e:
+        print(f"Could not start recording: {e}")
+        return None
+    leds.show(SESSION_COLOR)
+    print("Session recording started - double-tap to stop and save.")
+    return session
+
+
+def _end_session(session, leds):
+    proc, path = session
+    try:
+        duration = stop_session(proc, path)
+        print(f"Saved: {path} ({duration:.1f} s)")
+    except (RuntimeError, OSError) as e:
+        print(e)
+    leds.off()
+
+
+def _session_died(session, leds):
+    """arecord exited without being asked to (e.g. device error)."""
+    proc, path = session
+    err = session_stderr(proc)
+    print(f"Session recording stopped unexpectedly (arecord exit code {proc.returncode})"
+          + (f": {err}" if err else "."))
+    try:
+        duration = stop_session(proc, path)       # already exited: just finalize the file
+        print(f"Saved: {path} ({duration:.1f} s)")
+    except (RuntimeError, OSError):
+        print("No audio was saved.")
+    leds.off()
+
+
+def button_loop(device, leds):
     import RPi.GPIO as GPIO
     GPIO.setmode(GPIO.BCM)
     GPIO.setup(BUTTON_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
-    print(f"Using audio device {device}. Press the button to record "
-          f"(Ctrl+C to quit).")
+    print(f"Using audio device {device}. Tap the button to record {RECORD_SECONDS}s "
+          f"and analyze; double-tap to start/stop a recording without analysis "
+          f"(Ctrl+C to quit).\nRecordings are saved to {SAVE_DIR}")
+    taps = TapDetector()
+    pressed = False
+    session = None                                 # (proc, path) while recording
     try:
         while True:
-            if GPIO.input(BUTTON_PIN) == GPIO.LOW:
-                time.sleep(0.03)                   # debounce
-                if GPIO.input(BUTTON_PIN) == GPIO.LOW:
+            if session is not None and session[0].poll() is not None:
+                _session_died(session, leds)
+                session = None
+                print("\nPress the button to record again.")
+            pressed = _read_pressed(GPIO, pressed)
+            tap = taps.update(pressed, time.monotonic())
+            if tap == DOUBLE_TAP:
+                if session is None:
+                    session = _begin_session(device, leds)
+                else:
+                    _end_session(session, leds)
+                    session = None
+                    print("\nPress the button to record again.")
+            elif tap == SINGLE_TAP:
+                if session is not None:
+                    print("Recording... double-tap to stop.")
+                else:
                     try:
-                        capture_and_analyze(device, leds, keep)
+                        capture_and_analyze(device, leds)
                     except RuntimeError as e:
                         print(e)
-                    while GPIO.input(BUTTON_PIN) == GPIO.LOW:
-                        time.sleep(0.02)           # wait for release
                     print("\nPress the button to record again.")
-            time.sleep(0.02)
+                    # taps during the recording don't count; a press still
+                    # down now is ignored until released
+                    pressed = GPIO.input(BUTTON_PIN) == GPIO.LOW
+                    taps.reset(pressed)
+            time.sleep(POLL_INTERVAL)
     except KeyboardInterrupt:
+        if session is not None:
+            _end_session(session, leds)            # save the session before quitting
+            session = None
         print("\nBye.")
     finally:
+        if session is not None:                    # unexpected error: don't orphan arecord
+            _end_session(session, leds)
         leds.off()
         GPIO.cleanup()
 
@@ -296,7 +583,6 @@ def main():
     p.add_argument("--file", help="analyze an existing 16-bit WAV instead of recording")
     p.add_argument("--now", action="store_true", help="record once without the button")
     p.add_argument("--device", help="ALSA device (default: auto-detect ReSpeaker)")
-    p.add_argument("--no-save", action="store_true", help="delete recordings after analysis")
     args = p.parse_args()
 
     try:
@@ -307,9 +593,9 @@ def main():
         device = args.device or find_card()
         leds = Leds()
         if args.now:
-            capture_and_analyze(device, leds, not args.no_save)
+            capture_and_analyze(device, leds)
         else:
-            button_loop(device, leds, not args.no_save)
+            button_loop(device, leds)
     except (RuntimeError, OSError, ValueError, EOFError, wave.Error) as e:
         sys.exit(f"Error: {e}")
 
