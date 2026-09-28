@@ -564,5 +564,48 @@ class G2GateTest(unittest.TestCase):
             self.assertEqual(os.listdir(save_dir), [])
 
 
+class MainErrorTests(unittest.TestCase):
+    """--file / --now failures exit with a short message, not a traceback."""
+
+    def run_main(self, argv):
+        with mock.patch.object(sys, "argv", ["respeaker_analyzer.py"] + argv):
+            with self.assertRaises(SystemExit) as cm:
+                ra.main()
+        return str(cm.exception.code)
+
+    def test_missing_file(self):
+        msg = self.run_main(["--file", "/nonexistent/x.wav"])
+        self.assertTrue(msg.startswith("Error:"), msg)
+        self.assertIn("No such file", msg)
+
+    def test_not_a_wav_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "bad.wav")
+            with open(path, "w") as f:
+                f.write("not audio")
+            msg = self.run_main(["--file", path])
+        self.assertTrue(msg.startswith("Error:"), msg)
+
+    def test_8bit_wav_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "8bit.wav")
+            with wave.open(path, "wb") as wf:
+                wf.setnchannels(1)
+                wf.setsampwidth(1)
+                wf.setframerate(16000)
+                wf.writeframes(bytes(100))
+            msg = self.run_main(["--file", path])
+        self.assertIn("16-bit", msg)
+
+    def test_now_recording_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(ra, "SAVE_DIR", tmp), \
+                 fake_arecord_on_path(FAKE_ARECORD_FAIL="1"), \
+                 no_spidev(), \
+                 contextlib.redirect_stdout(io.StringIO()):
+                msg = self.run_main(["--now", "--device", "plughw:9,0"])
+        self.assertIn("arecord failed", msg)
+
+
 if __name__ == "__main__":
     unittest.main()

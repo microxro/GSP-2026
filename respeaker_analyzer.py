@@ -299,16 +299,19 @@ def main():
     p.add_argument("--no-save", action="store_true", help="delete recordings after analysis")
     args = p.parse_args()
 
-    if args.file:
-        report(analyze(*load_wav(args.file)))
-        return
+    try:
+        if args.file:
+            report(analyze(*load_wav(args.file)))
+            return
 
-    device = args.device or find_card()
-    leds = Leds()
-    if args.now:
-        capture_and_analyze(device, leds, not args.no_save)
-    else:
-        button_loop(device, leds, not args.no_save)
+        device = args.device or find_card()
+        leds = Leds()
+        if args.now:
+            capture_and_analyze(device, leds, not args.no_save)
+        else:
+            button_loop(device, leds, not args.no_save)
+    except (RuntimeError, OSError, ValueError, EOFError, wave.Error) as e:
+        sys.exit(f"Error: {e}")
 
 
 if __name__ == "__main__":
