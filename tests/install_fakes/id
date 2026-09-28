@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Logs the call, then delegates to the real `id` so answers stay correct.
+echo "id $*" >> "$CALL_LOG"
+exec /usr/bin/id "$@"

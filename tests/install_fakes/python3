@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# Fake python3: used only when the test invokes the installed wrapper
+# afterwards, to prove argv (including args containing spaces) survives
+# the wrapper's `exec python3 ... "$@"` unchanged.
+echo "python3 $*" >> "$CALL_LOG"
+for a in "$@"; do
+    echo "ARG:[$a]"
+done
+exit 0

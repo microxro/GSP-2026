@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Fake raspi-config: just logs and succeeds.
+echo "raspi-config $*" >> "$CALL_LOG"
+exit 0

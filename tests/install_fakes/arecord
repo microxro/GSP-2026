@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# Fake arecord -l: whether a seeed/wm8960 card shows up is controlled by
+# FAKE_CARD_PRESENT=1|0 (default 0 = no card detected).
+echo "arecord $*" >> "$CALL_LOG"
+if [[ "${FAKE_CARD_PRESENT:-0}" == "1" ]]; then
+    echo "card 0: seeed2micvoicec [seeed-2mic-voicecard], device 0: ..."
+    exit 0
+else
+    echo "no soundcards found" >&2
+    exit 1
+fi
