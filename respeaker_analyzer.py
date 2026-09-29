@@ -90,13 +90,15 @@ class Leds:
         except Exception:
             self.spi = None
 
-    def show(self, rgb, brightness=8):
+    def show(self, rgb, brightness=8, lit=None):
+        """Show a color on the first `lit` LEDs (default: all); the rest are off."""
         if not self.spi:
             return
         r, g, b = rgb
+        lit = self.count if lit is None else lit
         frame = [0x00] * 4
-        for _ in range(self.count):
-            frame += [0xE0 | brightness, b, g, r]
+        for i in range(self.count):
+            frame += [0xE0 | brightness, b, g, r] if i < lit else [0xE0, 0, 0, 0]
         frame += [0xFF] * 4
         try:
             self.spi.xfer2(frame)
@@ -139,10 +141,20 @@ def arecord_cmd(device, path, seconds=None):
     return cmd + [path]
 
 
-def record(path, device, seconds=RECORD_SECONDS):
-    result = subprocess.run(arecord_cmd(device, path, seconds), capture_output=True, text=True)
-    if result.returncode != 0:
-        raise RuntimeError(f"arecord failed: {result.stderr.strip()}")
+def record(path, device, seconds=RECORD_SECONDS, on_tick=None):
+    """Record `seconds` of audio; on_tick(elapsed_s) is called ~20x/s meanwhile."""
+    proc = subprocess.Popen(arecord_cmd(device, path, seconds), stdout=subprocess.DEVNULL,
+                            stderr=subprocess.PIPE, text=True)
+    start = time.monotonic()
+    while True:
+        try:
+            _, err = proc.communicate(timeout=0.05)
+            break
+        except subprocess.TimeoutExpired:
+            if on_tick:
+                on_tick(time.monotonic() - start)
+    if proc.returncode != 0:
+        raise RuntimeError(f"arecord failed: {err.strip()}")
 
 
 # --------------------------------------------------------------------------- #
@@ -414,9 +426,23 @@ def volume_color(idx):
 def capture_and_analyze(device, leds):
     path = recording_path("rec")
 
-    leds.show((255, 0, 0))                         # red = recording
+    # Red countdown while recording: 3 LEDs lit, then 2, then 1
+    count = leds.count
+    lit_now = [count]
+
+    def countdown(elapsed):
+        lit = max(1, count - int(elapsed * count / RECORD_SECONDS))
+        if lit != lit_now[0]:
+            lit_now[0] = lit
+            leds.show((255, 0, 0), lit=lit)
+
+    leds.show((255, 0, 0), lit=count)              # red = recording
     print(f"Recording {RECORD_SECONDS}s ...")
-    record(path, device)
+    try:
+        record(path, device, on_tick=countdown)
+    except BaseException:
+        leds.off()                                 # don't leave the LEDs stuck on red
+        raise
     leds.show((0, 0, 255))                         # blue = analyzing
     samples, rate = load_wav(path)
     result = analyze(samples, rate)

@@ -15,7 +15,7 @@ The analysis after a single tap reports:
 
 - **Volume:** exact RMS and peak level (dBFS) and an estimated dB SPL. You also get a rating from SILENT to EXTREME showing its level (e.g. 5 of 7) and range, plus a LOW→HIGH meter with a 0–100 score.
 - **Frequency:** the exact dominant frequency, the spectral centroid and the top 3 peaks (Hz). Band energy is shown as a % for Low 20–250, Mid 250–4000 and High 4000+ Hz. You also get a rating from VERY LOW to VERY HIGH showing its level and range, plus a meter with a 0–100 score.
-- **LEDs (optional):** red while recording, blue while analyzing, then green→red to show loudness
+- **LEDs:** a red countdown while recording (3 LEDs, then 2, then 1, one per second), blue while analyzing, then green→red to show loudness
 
 ## One-step install (Raspberry Pi)
 Works on a fresh Raspberry Pi OS Lite, including the Pi Zero WH. You only need `git` to get the code:
