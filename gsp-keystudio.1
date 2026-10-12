@@ -175,6 +175,11 @@ Shown when the sound was too loud for the microphones; the readings are
 then lower than the real level.
 .SS Frequency
 The heading shows the analysis rate, FFT size and sample rate.
+Before the frequency analysis, everything below about 20 Hz is filtered
+out: real microphones pick up slow pressure changes and rumble that are
+much stronger than speech and would otherwise drown out the lowest
+frequencies.
+No frequency below 20 Hz is ever reported.
 .TP
 .B Lowest freq / Highest freq
 The lowest and highest main frequency heard, and when.
@@ -188,15 +193,15 @@ The first and last 21 ms of the recording can't be measured (half a
 inside its true range.
 .TP
 .B Dominant freq
-The strongest frequency over the whole recording, accurate to about
-1 Hz for a steady tone.
+The strongest frequency over the whole recording (the first of the top
+peaks), accurate to about 1 Hz for a steady tone.
 .TP
 .B Spectral center
 The "center of mass" of the sound; higher means a brighter sound.
 .TP
 .B Top peaks
 The three strongest frequencies, at least 50 Hz apart, with each one's
-strength relative to the strongest (+0.0 dB).
+strength relative to the strongest (+0.0 dB, the dominant frequency).
 .TP
 .B Band energy
 Percent of the sound's energy in Low (20\-250 Hz), Mid (250\-4000 Hz) and
