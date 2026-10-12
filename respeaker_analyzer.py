@@ -58,6 +58,7 @@ FAST_SECONDS = 0.125       # sound-meter "fast" averaging for lowest/highest vol
 GATE_DB = 30               # frequency tracking ignores frames this far below the loudest
 PROMINENCE_DB = 10         # ...and frames whose peak isn't this far above the frame median
 SILENCE_DBFS = -75         # a recording whose loudest frame is below this is silent
+HIGHPASS_HZ = 20           # analysis ignores DC drift and rumble below about this
 # dB(A) SPL = A-weighted dBFS + offset. "gsp-keystudio --calibrate <meter
 # reading>" measures the offset exactly. Without it, the offset is worked out
 # from the mic's typical sensitivity and the WM8960's current gain settings:
@@ -391,7 +392,23 @@ def interpolated_peaks(power, k, rate, n):
     denom = a - 2 * b + c
     offset = np.divide(0.5 * (a - c), denom, out=np.zeros_like(denom), where=denom < 0)
     offset[kk != k] = 0.0                          # peak at the very edge: no refinement
-    return (k + offset) * rate / n
+    return (k + np.clip(offset, -0.5, 0.5)) * rate / n   # a true peak moves < half a bin
+
+
+def _box(x, length):
+    """Centred moving average (edges padded with the end values)."""
+    xp = np.pad(x.astype(np.float64), (length // 2, length - 1 - length // 2), mode="edge")
+    c = np.concatenate(([0.0], np.cumsum(xp)))
+    return (c[length:] - c[:-length]) / length
+
+
+def highpass(x, rate):
+    """Remove DC drift and rumble below ~HIGHPASS_HZ (subtracts a twice-applied
+    moving average: -8 dB at 20 Hz, -19 dB at 10 Hz, flat from 50 Hz up).
+    Real mics pick up slow pressure changes far stronger than speech, and
+    without this they swamp the lowest frequency bins."""
+    length = max(3, round(rate * 900 / 48000 * 20 / HIGHPASS_HZ))
+    return (x - _box(_box(x, length), length)).astype(np.float32)
 
 
 def analyze(samples, rate):
@@ -411,19 +428,28 @@ def analyze(samples, rate):
     a_weight = weight * a_weighting(freqs)
     k_min = int(np.searchsorted(freqs, 20.0))      # ignore DC and rumble below 20 Hz
 
-    frames = np.lib.stride_tricks.sliding_window_view(samples, n)[::hop]
+    n_frames = 1 + (samples.size - n) // hop
+    margin = 2 * round(rate * 900 / 48000 * 20 / HIGHPASS_HZ)   # filter settling room
     level_z, level_a, peak_f, prominent = [], [], [], []
     spec_sum = np.zeros(freqs.size)
-    for i in range(0, len(frames), 256):           # in chunks: long files fit in memory
-        power = np.abs(np.fft.rfft(frames[i:i + 256] * window, axis=1)) ** 2
+    for f0 in range(0, n_frames, 256):             # in chunks: long files fit in memory
+        f1 = min(n_frames, f0 + 256)
+        s0, s1 = f0 * hop, (f1 - 1) * hop + n
+        a, b = max(0, s0 - margin), min(samples.size, s1 + margin)
+        seg = highpass(samples[a:b], rate)[s0 - a:s1 - a]
+        frames = np.lib.stride_tricks.sliding_window_view(seg, n)[::hop]
+        power = np.abs(np.fft.rfft(frames * window, axis=1)) ** 2
         spec_sum += power.sum(axis=0)
         level_z.append(power @ weight / norm)
         level_a.append(power @ a_weight / norm)
         audible = power[:, k_min:]
         k = np.argmax(audible, axis=1) + k_min
+        rows = np.arange(len(k))
+        is_peak = (power[rows, k] >= power[rows, k - 1]) & \
+                  (power[rows, k] >= power[rows, np.minimum(k + 1, power.shape[1] - 1)])
         peak_f.append(interpolated_peaks(power, k, rate, n))
-        prominent.append(power[np.arange(len(k)), k] >= np.median(audible, axis=1)
-                         * 10 ** (PROMINENCE_DB / 10))
+        prominent.append(is_peak & (power[rows, k] >= np.median(audible, axis=1)
+                                    * 10 ** (PROMINENCE_DB / 10)))
     level_z = np.concatenate(level_z)              # mean square per frame (full scale = 1)
     level_a = np.concatenate(level_a)
     peak_f = np.concatenate(peak_f)
@@ -447,14 +473,8 @@ def analyze(samples, rate):
     silent = loudest < SILENCE_DBFS
     spectrum = spec_sum / max(1, level_z.size)     # average spectrum of the recording
     audible = spectrum[k_min:]
-    if not silent and audible.sum() > 0:
-        k = int(np.argmax(audible)) + k_min
-        dominant = float(interpolated_peaks(spectrum, k, rate, n)[0])
-        centroid = float(np.sum(freqs[k_min:] * audible) / np.sum(audible))
-    else:
-        dominant = centroid = 0.0
-
-    # top 3 distinct peaks (local maxima at least 50 Hz apart), strongest first
+    # top 3 distinct peaks (true local maxima, at least 50 Hz apart), strongest first;
+    # the strongest one is the dominant frequency
     peaks = []
     is_max = np.r_[False, (spectrum[1:-1] > spectrum[:-2]) & (spectrum[1:-1] >= spectrum[2:]), False]
     is_max[:k_min] = False
@@ -462,8 +482,13 @@ def analyze(samples, rate):
         if len(peaks) == 3 or spectrum[k] <= 0 or silent:
             break
         f = float(interpolated_peaks(spectrum, k, rate, n)[0])
-        if is_max[k] and all(abs(f - pf) >= 50 for pf, _ in peaks):
-            peaks.append((f, float(power_db(spectrum[k] / spectrum[k_min:].max()))))
+        if is_max[k] and f >= HIGHPASS_HZ and all(abs(f - pf) >= 50 for pf, _, _ in peaks):
+            peaks.append((f, 0.0, spectrum[k]))
+    peaks = [(f, float(power_db(p / peaks[0][2])), p) for f, _, p in peaks]
+    dominant = peaks[0][0] if peaks else 0.0
+    centroid = float(np.sum(freqs[k_min:] * audible) / np.sum(audible)) \
+        if not silent and audible.sum() > 0 else 0.0
+    peaks = [(f, db) for f, db, _ in peaks]
 
     total = audible.sum() or 1.0
     bands = {name: float(spectrum[(freqs >= lo) & (freqs < hi)].sum() / total * 100)
@@ -476,7 +501,8 @@ def analyze(samples, rate):
     padded = np.pad(level_z, reach, mode="edge")
     local_max = np.lib.stride_tricks.sliding_window_view(padded, 2 * reach + 1).max(axis=1)
     steady = level_z >= local_max * 10 ** (-1 / 10)
-    tracked = (power_db(level_z) >= max(loudest - GATE_DB, SILENCE_DBFS)) & prominent & steady
+    tracked = (power_db(level_z) >= max(loudest - GATE_DB, SILENCE_DBFS)) & prominent & steady \
+        & (peak_f >= HIGHPASS_HZ)
     if silent or not tracked.any():
         low = high = (0.0, 0.0)
     else:
