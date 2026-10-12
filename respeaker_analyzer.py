@@ -58,9 +58,21 @@ FAST_SECONDS = 0.125       # sound-meter "fast" averaging for lowest/highest vol
 GATE_DB = 30               # frequency tracking ignores frames this far below the loudest
 PROMINENCE_DB = 10         # ...and frames whose peak isn't this far above the frame median
 SILENCE_DBFS = -75         # a recording whose loudest frame is below this is silent
-# dB(A) SPL = A-weighted dBFS + offset. 94 is a rough guess for this HAT;
-# "gsp-keystudio --calibrate <meter reading>" measures the real offset.
-SPL_OFFSET = 94.0
+# dB(A) SPL = A-weighted dBFS + offset. "gsp-keystudio --calibrate <meter
+# reading>" measures the offset exactly. Without it, the offset is worked out
+# from the mic's typical sensitivity and the WM8960's current gain settings:
+#   offset = 94 - mic sensitivity - total gain + ADC full scale + 3.01
+# (3.01: a full-scale sine reads -3.01 dBFS RMS). The HAT's mic part isn't
+# published, so the sensitivity is the typical value for analog MEMS mics.
+MIC_SENSITIVITY_DBV = -38.0    # mic output at 94 dB SPL (1 Pa), dBV
+ADC_FULL_SCALE_DBV = 0.0       # WM8960 at AVDD 3.3 V: 1.0 Vrms in = 0 dBFS
+HAT_CARD = "seeed2micvoicec"
+# Gain stages between mic and ADC, with the installer's settings as fallback
+GAIN_CONTROLS = [
+    ("Capture", 20.25),                        # input PGA (installer: 80%)
+    ("Left Input Boost Mixer LINPUT1", 0.0),   # mic boost: 0 / +13 / +20 / +29 dB
+    ("ADC PCM", 0.0),                          # ADC digital volume
+]
 CALIBRATION_FILE = os.path.expanduser(
     os.environ.get("GSP_CALIBRATION_FILE") or "~/.config/gsp-keystudio/spl_offset")
 
@@ -329,13 +341,35 @@ def power_db(p):
     return 10 * np.log10(np.maximum(p, 1e-20))
 
 
+def mixer_gain_db(card=HAT_CARD):
+    """(total mic gain in dB, read live?) from the WM8960's mixer controls."""
+    total, live = 0.0, True
+    for control, default in GAIN_CONTROLS:
+        try:
+            out = subprocess.run(["amixer", "-c", card, "sget", control],
+                                 capture_output=True, text=True, timeout=3).stdout
+        except (OSError, subprocess.TimeoutExpired):
+            out = ""
+        m = re.search(r"\[(-?\d+(?:\.\d+)?)dB\]", out)
+        if m:
+            total += float(m.group(1))
+        else:
+            total, live = total + default, False
+    return total, live
+
+
 def spl_offset():
-    """(offset, calibrated?) - from --calibrate if it was run, else the default."""
+    """(offset, how it was obtained) - from --calibrate if it was run, else
+    estimated from the mic sensitivity and the current gain settings."""
     try:
         with open(CALIBRATION_FILE) as f:
-            return float(f.read().strip()), True
+            return float(f.read().strip()), "calibrated"
     except (OSError, ValueError):
-        return SPL_OFFSET, False
+        pass
+    gain, live = mixer_gain_db()
+    offset = 94.0 - MIC_SENSITIVITY_DBV - gain + ADC_FULL_SCALE_DBV + 3.01
+    how = f"estimated from mic gain {gain:+.1f} dB" if live else "estimated from typical gain"
+    return offset, how + ", about +/-5 dB - see --calibrate"
 
 
 def a_weighting(freqs):
@@ -397,7 +431,7 @@ def analyze(samples, rate):
     t = (np.arange(level_z.size) * hop + n / 2) / rate   # time of each frame's centre
 
     # --- volume (dB(A) SPL) ---
-    offset, calibrated = spl_offset()
+    offset, level_source = spl_offset()
     leq_a = float(power_db(level_a.mean()))        # energy average of the whole recording
     k_fast = max(1, round(FAST_SECONDS * FRAME_RATE))
     if level_a.size >= k_fast:
@@ -456,7 +490,7 @@ def analyze(samples, rate):
         "avg_spl": avg_spl, "leq_dbfs": leq_a,
         "min_spl": max(0.0, float(power_db(fast[i_lo])) + offset), "min_t": float(fast_t[i_lo]),
         "max_spl": max(0.0, float(power_db(fast[i_hi])) + offset), "max_t": float(fast_t[i_hi]),
-        "peak_dbfs": peak_dbfs, "clipping": peak_dbfs > -0.5, "calibrated": calibrated,
+        "peak_dbfs": peak_dbfs, "clipping": peak_dbfs > -0.5, "level_source": level_source,
         "low_freq": low[0], "low_t": low[1], "high_freq": high[0], "high_t": high[1],
         "dominant": dominant, "centroid": centroid, "bands": bands, "peaks": peaks,
         "vol_idx": v_idx, "vol_label": v_label, "silent": silent,
@@ -485,11 +519,11 @@ def meter(fraction, width=30):
 
 def report(r):
     vol_frac = (r["avg_spl"] - 20) / 90            # meter: 20 dB (silence) .. 110 dB
-    cal = "calibrated" if r["calibrated"] else "estimated - see --calibrate"
     nyquist = r["rate"] / 2
 
     print("\n" + "=" * 64)
-    print(f" VOLUME  (dB(A) sound level, like a sound meter; {cal})")
+    print(" VOLUME  (dB(A) sound level, like a sound meter)")
+    print(f"   Accuracy                 : {r['level_source']}")
     print(f"   Average (whole recording): {r['avg_spl']:6.1f} dB")
     print(f"   Lowest  (quietest 1/8 s) : {r['min_spl']:6.1f} dB   at {r['min_t']:.2f} s")
     print(f"   Highest (loudest 1/8 s)  : {r['max_spl']:6.1f} dB   at {r['max_t']:.2f} s")

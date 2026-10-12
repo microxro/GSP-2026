@@ -13,7 +13,7 @@ Both kinds go to the recordings folder that the installer creates (`/home/pranav
 
 The 3-second recording is made at 48 kHz (the chip's maximum, hears up to 24 kHz) and analyzed 200 times per second, so it can follow sweeps and changing sounds. The report shows:
 
-- **Volume** in dB(A), like a sound level meter: the **average** of the whole recording, the **lowest** and **highest** 1/8-second levels (with when they happened), plus a rating and meter. Run `gsp-keystudio --calibrate <dB>` once with a sound meter (a phone app works) next to the HAT to make these exact; until then they're estimates.
+- **Volume** in dB(A), like a sound level meter: the **average** of the whole recording, the **lowest** and **highest** 1/8-second levels (with when they happened), plus a rating and meter. Without calibration the program estimates real decibels from the sound chip's current gain settings and the typical sensitivity of this kind of mic (usually within about 5 dB). For exact readings, run `gsp-keystudio --calibrate <dB>` once with a sound meter (a phone app works) next to the HAT.
 - **Frequency:** the exact **lowest** and **highest** frequency heard (with when), the dominant frequency, spectral centre, the top 3 peaks and the share of energy in the low/mid/high bands.
 - **LEDs:** a red countdown while recording (3 LEDs, then 2, then 1, one per second), blue while analyzing, then green→red to show loudness
 
@@ -47,7 +47,7 @@ gsp-keystudio --calibrate 65  # make volumes match a sound meter reading of 65 d
 ```
 The script detects the sound card automatically; use `--device plughw:N,0` to override it.
 
-Volumes are estimates until you calibrate once: hold a sound level meter (a phone app is fine) next to the HAT, make a steady sound, and run `gsp-keystudio --calibrate <the meter's dB(A) reading>`.
+Volumes are estimated from the mic gain settings (about ±5 dB) until you calibrate once: hold a sound level meter (a phone app is fine) next to the HAT, make a steady sound, and run `gsp-keystudio --calibrate <the meter's dB(A) reading>`.
 
 ## Play back your recordings
 Every recording is saved in the folder the installer made: `/home/pranav/recordings/`.

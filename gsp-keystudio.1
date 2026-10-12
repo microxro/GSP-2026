@@ -123,12 +123,28 @@ as a frequency sweep.
 Volumes are in dB(A): the same A-weighted decibels a sound level meter or
 phone meter app shows, where about 30 dB is a quiet room, 60 dB normal
 conversation and 85 dB very loud.
-Until you run
-.BR \-\-calibrate ,
-the heading says
-.I estimated
-and the numbers can be off by several dB; after calibrating it says
-.IR calibrated .
+The
+.B Accuracy
+line says how the microphone signal was turned into real decibels:
+.TP
+.B estimated from mic gain ...
+Not calibrated yet.
+The program reads the sound chip's current gain settings (input volume,
+mic boost and digital volume, with
+.BR amixer )
+and combines them with the typical sensitivity of this kind of microphone.
+The exact mic part on the HAT isn't published, so this is usually within
+about 5 dB.
+If the settings can't be read (for example when analyzing a file on
+another computer), the installer's default settings are assumed.
+.TP
+.B calibrated
+After
+.BR \-\-calibrate :
+the readings match the sound level meter you calibrated against.
+Changing the capture volume or mic boost in
+.B alsamixer
+afterwards makes the calibration wrong; calibrate again.
 .TP
 .B Average (whole recording)
 The energy average of the entire recording (what sound meters call Leq).
