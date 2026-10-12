@@ -2,10 +2,12 @@
 """
 ReSpeaker 2-Mic Pi HAT (Keyestudio) - button-triggered audio recorder/analyzer.
 
-Tap the on-board button (GPIO17) once -> record 3 seconds -> analyze:
-  * Frequency: dominant pitch, spectral centroid, band energy (low/mid/high)
-  * Volume:    RMS and peak level in dBFS, with an estimated dB SPL
-Each result is rated on a LOW -> HIGH scale and printed as a bar meter.
+Tap the on-board button (GPIO17) once -> record 3 seconds at 48 kHz -> analyze
+200 times per second:
+  * Volume:    average, lowest and highest level in dB(A), like a sound meter
+               (run --calibrate once against a real meter for exact values)
+  * Frequency: lowest and highest frequency heard (tracks sweeps), dominant
+               pitch, spectral centre, top peaks, band energy
 
 Double-tap the button -> start recording (LEDs magenta, no time limit).
 Double-tap again      -> stop and save that recording (no analysis).
@@ -21,6 +23,7 @@ Usage:
   python3 respeaker_analyzer.py --file x.wav  # analyze an existing WAV
   python3 respeaker_analyzer.py --play        # play the newest recording on the HAT
   python3 respeaker_analyzer.py --play x.wav  # play a chosen recording
+  python3 respeaker_analyzer.py --calibrate 65  # match a sound meter reading
 """
 import argparse
 import datetime
@@ -38,7 +41,7 @@ import numpy as np
 
 BUTTON_PIN = 17            # ReSpeaker 2-Mic HAT user button (BCM numbering)
 RECORD_SECONDS = 3
-SAMPLE_RATE = 16000        # WM8960 codec supports 8k-48k; 16k covers voice + 8 kHz highs
+SAMPLE_RATE = 48000        # WM8960 maximum: captures frequencies up to 24 kHz
 CHANNELS = 2
 # Where every recording is saved. The installed gsp-keystudio wrapper exports
 # GSP_RECORDINGS_DIR (the folder the installer created).
@@ -48,31 +51,42 @@ DEBOUNCE = 0.03            # s: a level change must still be there this much lat
 POLL_INTERVAL = 0.02       # s: button polling period
 SESSION_STOP_TIMEOUT = 5   # s: wait for arecord to exit after each stop signal
 SESSION_COLOR = (255, 0, 255)  # magenta = double-tap recording in progress
-# dBFS -> dB SPL offset. ~94 dB SPL for 0 dBFS is a rough default for this
-# HAT at default capture gain; calibrate against a sound meter for accuracy.
-SPL_OFFSET = 94.0
+# Analysis: a 2048-point FFT (about 43 ms at 48 kHz) every 5 ms
+FRAME_RATE = 200           # analyses per second
+WINDOW_SECONDS = 0.04      # FFT length is the next power of 2 above this
+FAST_SECONDS = 0.125       # sound-meter "fast" averaging for lowest/highest volume
+GATE_DB = 30               # frequency tracking ignores frames this far below the loudest
+PROMINENCE_DB = 10         # ...and frames whose peak isn't this far above the frame median
+SILENCE_DBFS = -75         # a recording whose loudest frame is below this is silent
+# dB(A) SPL = A-weighted dBFS + offset. "gsp-keystudio --calibrate <meter
+# reading>" measures the offset exactly. Without it, the offset is worked out
+# from the mic's typical sensitivity and the WM8960's current gain settings:
+#   offset = 94 - mic sensitivity - total gain + ADC full scale + 3.01
+# (3.01: a full-scale sine reads -3.01 dBFS RMS). The HAT's mic part isn't
+# published, so the sensitivity is the typical value for analog MEMS mics.
+MIC_SENSITIVITY_DBV = -38.0    # mic output at 94 dB SPL (1 Pa), dBV
+ADC_FULL_SCALE_DBV = 0.0       # WM8960 at AVDD 3.3 V: 1.0 Vrms in = 0 dBFS
+HAT_CARD = "seeed2micvoicec"
+# Gain stages between mic and ADC, with the installer's settings as fallback
+GAIN_CONTROLS = [
+    ("Capture", 20.25),                        # input PGA (installer: 80%)
+    ("Left Input Boost Mixer LINPUT1", 0.0),   # mic boost: 0 / +13 / +20 / +29 dB
+    ("ADC PCM", 0.0),                          # ADC digital volume
+]
+CALIBRATION_FILE = os.path.expanduser(
+    os.environ.get("GSP_CALIBRATION_FILE") or "~/.config/gsp-keystudio/spl_offset")
 
-# (upper bound Hz, label) - rating of the dominant frequency
-FREQ_LEVELS = [
-    (60, "VERY LOW"),
-    (250, "LOW"),
-    (1000, "MID-LOW"),
-    (2000, "MID"),
-    (4000, "MID-HIGH"),
-    (6000, "HIGH"),
-    (float("inf"), "VERY HIGH"),
-]
-# (upper bound dBFS, label) - rating of the RMS loudness
+# (upper bound dB SPL, label) - rating of the average volume
 VOLUME_LEVELS = [
-    (-60, "SILENT"),
-    (-45, "VERY QUIET"),
-    (-35, "QUIET"),
-    (-25, "MODERATE"),
-    (-15, "LOUD"),
-    (-6, "VERY LOUD"),
-    (float("inf"), "EXTREME / CLIPPING"),
+    (35, "SILENT"),
+    (50, "VERY QUIET"),
+    (60, "QUIET"),
+    (70, "MODERATE"),
+    (80, "LOUD"),
+    (90, "VERY LOUD"),
+    (float("inf"), "EXTREME"),
 ]
-BANDS = [("Low", 20, 250), ("Mid", 250, 4000), ("High", 4000, 20000)]
+BANDS = [("Low", 20, 250), ("Mid", 250, 4000), ("High", 4000, float("inf"))]  # High: up to rate/2
 
 
 # --------------------------------------------------------------------------- #
@@ -292,6 +306,8 @@ def finalize_wav(path):
 
 
 def load_wav(path):
+    """Mono float32 samples (both mics mixed) and the sample rate.
+    float32 and per-channel mixing keep a long session small enough for a Pi Zero."""
     with wave.open(path, "rb") as wf:
         channels = wf.getnchannels()
         rate = wf.getframerate()
@@ -299,9 +315,11 @@ def load_wav(path):
         raw = wf.readframes(wf.getnframes())
     if width != 2:
         raise ValueError("Only 16-bit WAV files are supported")
-    data = np.frombuffer(raw, dtype=np.int16).astype(np.float64) / 32768.0
-    if channels > 1:
-        data = data.reshape(-1, channels).mean(axis=1)  # mix both mics
+    pcm = np.frombuffer(raw, dtype=np.int16).reshape(-1, channels)
+    data = pcm[:, 0].astype(np.float32)
+    for ch in range(1, channels):
+        data += pcm[:, ch]                         # mix both mics
+    data /= 32768.0 * channels
     return data, rate
 
 
@@ -319,52 +337,169 @@ def to_db(x):
     return 20 * np.log10(x) if x > 1e-10 else -100.0
 
 
+def power_db(p):
+    return 10 * np.log10(np.maximum(p, 1e-20))
+
+
+def mixer_gain_db(card=HAT_CARD):
+    """(total mic gain in dB, read live?) from the WM8960's mixer controls."""
+    total, live = 0.0, True
+    for control, default in GAIN_CONTROLS:
+        try:
+            out = subprocess.run(["amixer", "-c", card, "sget", control],
+                                 capture_output=True, text=True, timeout=3).stdout
+        except (OSError, subprocess.TimeoutExpired):
+            out = ""
+        m = re.search(r"\[(-?\d+(?:\.\d+)?)dB\]", out)
+        if m:
+            total += float(m.group(1))
+        else:
+            total, live = total + default, False
+    return total, live
+
+
+def spl_offset():
+    """(offset, how it was obtained) - from --calibrate if it was run, else
+    estimated from the mic sensitivity and the current gain settings."""
+    try:
+        with open(CALIBRATION_FILE) as f:
+            return float(f.read().strip()), "calibrated"
+    except (OSError, ValueError):
+        pass
+    gain, live = mixer_gain_db()
+    offset = 94.0 - MIC_SENSITIVITY_DBV - gain + ADC_FULL_SCALE_DBV + 3.01
+    how = f"estimated from mic gain {gain:+.1f} dB" if live else "estimated from typical gain"
+    return offset, how + ", about +/-5 dB - see --calibrate"
+
+
+def a_weighting(freqs):
+    """A-weighting power gains (IEC 61672), as used by sound level meters."""
+    f2 = np.maximum(freqs, 1e-3) ** 2
+    ra = (12194.0 ** 2 * f2 ** 2) / ((f2 + 20.6 ** 2) * np.sqrt((f2 + 107.7 ** 2) * (f2 + 737.9 ** 2))
+                                    * (f2 + 12194.0 ** 2))
+    return (ra * 10 ** (2.0 / 20)) ** 2
+
+
+def interpolated_peaks(power, k, rate, n):
+    """Frequencies of peak bins k (one per row of power), refined between bins
+    with a log-parabolic fit - accurate to well under one bin for a clear tone."""
+    power = np.atleast_2d(power)
+    k = np.atleast_1d(k)
+    kk = np.clip(k, 1, power.shape[1] - 2)
+    rows = np.arange(len(k))
+    a, b, c = (np.log(power[rows, kk + d] + 1e-30) for d in (-1, 0, 1))
+    denom = a - 2 * b + c
+    offset = np.divide(0.5 * (a - c), denom, out=np.zeros_like(denom), where=denom < 0)
+    offset[kk != k] = 0.0                          # peak at the very edge: no refinement
+    return (k + offset) * rate / n
+
+
 def analyze(samples, rate):
-    if samples.size == 0:                          # empty recording -> treat as silence
-        samples = np.zeros(2)
-    samples = samples - np.mean(samples)          # remove DC offset
-    rms = np.sqrt(np.mean(samples ** 2))
-    peak = np.max(np.abs(samples))
-    rms_db = to_db(rms)
-    peak_db = to_db(peak)
+    """Volume over time and frequency tracking, FRAME_RATE times per second."""
+    samples = np.asarray(samples, dtype=np.float32) if samples.size else np.zeros(1, np.float32)
+    samples -= samples.mean()                      # remove DC offset (in place: saves memory)
+    duration = samples.size / rate
+    n = int(2 ** np.ceil(np.log2(rate * WINDOW_SECONDS)))    # FFT size: 2048 at 48 kHz
+    hop = max(1, round(rate / FRAME_RATE))
+    if samples.size < n:
+        samples = np.pad(samples, (0, n - samples.size))
+    window = np.hanning(n)
+    norm = n * np.sum(window ** 2)                 # power spectrum -> mean square of frame
+    freqs = np.fft.rfftfreq(n, d=1.0 / rate)
+    weight = np.full(freqs.size, 2.0)              # one-sided spectrum: double inner bins
+    weight[0] = weight[-1] = 1.0
+    a_weight = weight * a_weighting(freqs)
+    k_min = int(np.searchsorted(freqs, 20.0))      # ignore DC and rumble below 20 Hz
 
-    spectrum = np.abs(np.fft.rfft(samples * np.hanning(len(samples))))
-    freqs = np.fft.rfftfreq(len(samples), d=1.0 / rate)
-    power = spectrum ** 2
-    audible = freqs >= 20                          # ignore rumble / DC
+    frames = np.lib.stride_tricks.sliding_window_view(samples, n)[::hop]
+    level_z, level_a, peak_f, prominent = [], [], [], []
+    spec_sum = np.zeros(freqs.size)
+    for i in range(0, len(frames), 256):           # in chunks: long files fit in memory
+        power = np.abs(np.fft.rfft(frames[i:i + 256] * window, axis=1)) ** 2
+        spec_sum += power.sum(axis=0)
+        level_z.append(power @ weight / norm)
+        level_a.append(power @ a_weight / norm)
+        audible = power[:, k_min:]
+        k = np.argmax(audible, axis=1) + k_min
+        peak_f.append(interpolated_peaks(power, k, rate, n))
+        prominent.append(power[np.arange(len(k)), k] >= np.median(audible, axis=1)
+                         * 10 ** (PROMINENCE_DB / 10))
+    level_z = np.concatenate(level_z)              # mean square per frame (full scale = 1)
+    level_a = np.concatenate(level_a)
+    peak_f = np.concatenate(peak_f)
+    prominent = np.concatenate(prominent)
+    t = (np.arange(level_z.size) * hop + n / 2) / rate   # time of each frame's centre
 
-    if power[audible].sum() > 0:
-        idx = np.argmax(spectrum * audible)
-        dominant = float(freqs[idx])
-        centroid = float(np.sum(freqs[audible] * power[audible]) / np.sum(power[audible]))
+    # --- volume (dB(A) SPL) ---
+    offset, level_source = spl_offset()
+    leq_a = float(power_db(level_a.mean()))        # energy average of the whole recording
+    k_fast = max(1, round(FAST_SECONDS * FRAME_RATE))
+    if level_a.size >= k_fast:
+        fast = np.convolve(level_a, np.ones(k_fast) / k_fast, mode="valid")
+        fast_t = t[:fast.size] + (k_fast - 1) / (2 * FRAME_RATE)
+    else:
+        fast, fast_t = np.array([level_a.mean()]), t[:1]   # shorter than 1/8 s
+    i_lo, i_hi = int(np.argmin(fast)), int(np.argmax(fast))
+    peak_dbfs = to_db(float(np.max(np.abs(samples))))
+
+    # --- frequency ---
+    loudest = float(power_db(level_z.max()))
+    silent = loudest < SILENCE_DBFS
+    spectrum = spec_sum / max(1, level_z.size)     # average spectrum of the recording
+    audible = spectrum[k_min:]
+    if not silent and audible.sum() > 0:
+        k = int(np.argmax(audible)) + k_min
+        dominant = float(interpolated_peaks(spectrum, k, rate, n)[0])
+        centroid = float(np.sum(freqs[k_min:] * audible) / np.sum(audible))
     else:
         dominant = centroid = 0.0
 
-    # top 3 distinct peaks (at least 30 Hz apart), strongest first
-    peaks, mag = [], spectrum * audible
-    for i in np.argsort(mag)[::-1]:
-        if mag[i] <= 0 or len(peaks) == 3:
+    # top 3 distinct peaks (local maxima at least 50 Hz apart), strongest first
+    peaks = []
+    is_max = np.r_[False, (spectrum[1:-1] > spectrum[:-2]) & (spectrum[1:-1] >= spectrum[2:]), False]
+    is_max[:k_min] = False
+    for k in np.argsort(spectrum)[::-1]:
+        if len(peaks) == 3 or spectrum[k] <= 0 or silent:
             break
-        if all(abs(freqs[i] - f) >= 30 for f, _ in peaks):
-            peaks.append((float(freqs[i]), to_db(mag[i] / (mag.max() or 1.0))))
+        f = float(interpolated_peaks(spectrum, k, rate, n)[0])
+        if is_max[k] and all(abs(f - pf) >= 50 for pf, _ in peaks):
+            peaks.append((f, float(power_db(spectrum[k] / spectrum[k_min:].max()))))
 
-    total = power[audible].sum() or 1.0
-    bands = {name: float(power[(freqs >= lo) & (freqs < hi)].sum() / total * 100)
+    total = audible.sum() or 1.0
+    bands = {name: float(spectrum[(freqs >= lo) & (freqs < hi)].sum() / total * 100)
              for name, lo, hi in BANDS}
 
-    f_idx, f_label = rate_level(dominant, FREQ_LEVELS)
-    v_idx, v_label = rate_level(rms_db, VOLUME_LEVELS)
+    # lowest / highest frequency: the main pitch of every loud, tonal, steady frame.
+    # "Steady" skips frames that straddle a sudden start/stop (within 1 dB of the
+    # loudest frame overlapping them), where the cut smears the pitch estimate.
+    reach = max(1, n // (2 * hop))
+    padded = np.pad(level_z, reach, mode="edge")
+    local_max = np.lib.stride_tricks.sliding_window_view(padded, 2 * reach + 1).max(axis=1)
+    steady = level_z >= local_max * 10 ** (-1 / 10)
+    tracked = (power_db(level_z) >= max(loudest - GATE_DB, SILENCE_DBFS)) & prominent & steady
+    if silent or not tracked.any():
+        low = high = (0.0, 0.0)
+    else:
+        idx = np.flatnonzero(tracked)
+        lo_i, hi_i = idx[np.argmin(peak_f[idx])], idx[np.argmax(peak_f[idx])]
+        low, high = (float(peak_f[lo_i]), float(t[lo_i])), (float(peak_f[hi_i]), float(t[hi_i]))
+
+    avg_spl = max(0.0, leq_a + offset)
+    v_idx, v_label = rate_level(avg_spl, VOLUME_LEVELS)
     return {
-        "rms_db": rms_db, "peak_db": peak_db, "spl": max(0.0, rms_db + SPL_OFFSET),
+        "avg_spl": avg_spl, "leq_dbfs": leq_a,
+        "min_spl": max(0.0, float(power_db(fast[i_lo])) + offset), "min_t": float(fast_t[i_lo]),
+        "max_spl": max(0.0, float(power_db(fast[i_hi])) + offset), "max_t": float(fast_t[i_hi]),
+        "peak_dbfs": peak_dbfs, "clipping": peak_dbfs > -0.5, "level_source": level_source,
+        "low_freq": low[0], "low_t": low[1], "high_freq": high[0], "high_t": high[1],
         "dominant": dominant, "centroid": centroid, "bands": bands, "peaks": peaks,
-        "freq_idx": f_idx, "freq_label": f_label,
-        "vol_idx": v_idx, "vol_label": v_label,
-        "silent": rms_db < VOLUME_LEVELS[0][0],
+        "vol_idx": v_idx, "vol_label": v_label, "silent": silent,
+        "rate": rate, "fft_size": n, "frame_rate": rate / hop, "duration": duration,
     }
 
 
 def level_range(idx, levels, unit):
-    """Text for the value range of a rating, e.g. '60-250 Hz'."""
+    """Text for the value range of a rating, e.g. '60 to 70 dB'."""
     lo = levels[idx - 1][0] if idx > 0 else None
     hi = levels[idx][0]
     if lo is None:
@@ -382,36 +517,37 @@ def meter(fraction, width=30):
     return f"LOW [{bar}] HIGH  ({fraction * 100:.0f}/100)"
 
 
-def rating_line(idx, label, levels, unit):
-    return f"{label}  (level {idx + 1} of {len(levels)}, {level_range(idx, levels, unit)})"
-
-
 def report(r):
-    # volume meter: linear over -80..0 dBFS; frequency meter: log over 20..8000 Hz
-    vol_frac = (r["rms_db"] + 80) / 80
-    freq_frac = (np.log10(max(r["dominant"], 20)) - np.log10(20)) / (np.log10(8000) - np.log10(20))
+    vol_frac = (r["avg_spl"] - 20) / 90            # meter: 20 dB (silence) .. 110 dB
+    nyquist = r["rate"] / 2
 
-    print("\n" + "=" * 60)
-    print(" VOLUME")
-    print(f"   RMS level      : {r['rms_db']:7.1f} dBFS")
-    print(f"   Peak level     : {r['peak_db']:7.1f} dBFS")
-    print(f"   Estimated SPL  : {r['spl']:7.1f} dB (approx.)")
-    print(f"   Rating         : {rating_line(r['vol_idx'], r['vol_label'], VOLUME_LEVELS, 'dBFS')}")
-    print(f"   {meter(vol_frac)}  {r['rms_db']:.1f} dBFS")
-    print(" FREQUENCY")
+    print("\n" + "=" * 64)
+    print(" VOLUME  (dB(A) sound level, like a sound meter)")
+    print(f"   Accuracy                 : {r['level_source']}")
+    print(f"   Average (whole recording): {r['avg_spl']:6.1f} dB")
+    print(f"   Lowest  (quietest 1/8 s) : {r['min_spl']:6.1f} dB   at {r['min_t']:.2f} s")
+    print(f"   Highest (loudest 1/8 s)  : {r['max_spl']:6.1f} dB   at {r['max_t']:.2f} s")
+    print(f"   Rating                   : {r['vol_label']}  (level {r['vol_idx'] + 1} of "
+          f"{len(VOLUME_LEVELS)}, {level_range(r['vol_idx'], VOLUME_LEVELS, 'dB')})")
+    print(f"   {meter(vol_frac)}  {r['avg_spl']:.1f} dB")
+    if r["clipping"]:
+        print("   WARNING: the sound was too loud for the mics (clipping) - readings are low.")
+    print(f" FREQUENCY  ({r['frame_rate']:.0f} analyses/s, {r['fft_size']}-point FFT, "
+          f"{r['rate']} Hz sample rate)")
     if r["silent"]:
         print("   Too quiet to measure frequency reliably.")
     else:
-        print(f"   Dominant freq  : {r['dominant']:7.1f} Hz")
-        print(f"   Spectral center: {r['centroid']:7.1f} Hz")
-        print(f"   Rating         : {rating_line(r['freq_idx'], r['freq_label'], FREQ_LEVELS, 'Hz')}")
-        print(f"   {meter(freq_frac)}  {r['dominant']:.1f} Hz")
+        print(f"   Lowest freq    : {r['low_freq']:8.1f} Hz   at {r['low_t']:.2f} s")
+        print(f"   Highest freq   : {r['high_freq']:8.1f} Hz   at {r['high_t']:.2f} s")
+        print(f"   Dominant freq  : {r['dominant']:8.1f} Hz")
+        print(f"   Spectral center: {r['centroid']:8.1f} Hz")
         print("   Top peaks      : " +
               ", ".join(f"{f:.1f} Hz ({db:+.1f} dB)" for f, db in r["peaks"]))
         print("   Band energy    :")
         for name, lo, hi in BANDS:
-            print(f"     {name:<5}({lo:>5}-{hi:<5} Hz): {r['bands'][name]:5.1f}%")
-    print("=" * 60)
+            hi = min(hi, nyquist)
+            print(f"     {name:<5}({lo:>5}-{hi:<5g} Hz): {r['bands'][name]:5.1f}%")
+    print("=" * 64)
 
 
 def volume_color(idx):
@@ -639,6 +775,36 @@ def play_recording(name, device):
         raise RuntimeError(f"aplay failed: {result.stderr.strip()}")
 
 
+def calibrate(meter_db, device, leds, wav=None):
+    """Make reports match a sound level meter: record (or load) a steady sound
+    the meter reads as `meter_db` dB(A) and save the dBFS -> dB SPL offset."""
+    if wav:
+        samples, rate = load_wav(wav)
+    else:
+        print("Hold a sound level meter next to the HAT and make a steady sound")
+        print(f"(e.g. music or a fan) that the meter reads as {meter_db:g} dB(A).")
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "calibrate.wav")
+            leds.show((255, 0, 0))
+            print(f"Recording {RECORD_SECONDS}s ...")
+            try:
+                record(path, device)
+            finally:
+                leds.off()
+            samples, rate = load_wav(path)
+    result = analyze(samples, rate)
+    if result["silent"]:
+        raise RuntimeError("Calibration sound was too quiet - make it louder and try again.")
+    if result["clipping"]:
+        raise RuntimeError("Calibration sound was too loud for the mics - make it quieter.")
+    offset = meter_db - result["leq_dbfs"]
+    os.makedirs(os.path.dirname(CALIBRATION_FILE), exist_ok=True)
+    with open(CALIBRATION_FILE, "w") as f:
+        f.write(f"{offset:.2f}\n")
+    print(f"Calibrated: offset {offset:.1f} dB saved to {CALIBRATION_FILE}.")
+    print("Volume readings now match your meter.")
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -646,12 +812,20 @@ def main():
     p.add_argument("--now", action="store_true", help="record once without the button")
     p.add_argument("--play", nargs="?", const="", metavar="FILE",
                    help="play a recording through the HAT (default: the newest one)")
+    p.add_argument("--calibrate", type=float, metavar="DB",
+                   help="match a sound level meter: record a steady sound the meter "
+                        "reads as DB dB(A) (or use --file) and save the correction")
     p.add_argument("--device", help="ALSA device (default: auto-detect ReSpeaker)")
     args = p.parse_args()
 
     try:
         if args.play is not None:
             play_recording(args.play, args.device or find_card())
+            return
+
+        if args.calibrate is not None:
+            device = None if args.file else (args.device or find_card())
+            calibrate(args.calibrate, device, Leds(), wav=args.file)
             return
 
         if args.file:
