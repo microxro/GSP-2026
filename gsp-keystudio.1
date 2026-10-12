@@ -1,4 +1,4 @@
-.TH GSP-KEYSTUDIO 1 "September 2026" "GSP-2026" "User Commands"
+.TH GSP-KEYSTUDIO 1 "October 2026" "GSP-2026" "User Commands"
 .SH NAME
 gsp-keystudio \- record and analyze audio with the Keyestudio ReSpeaker 2-Mic Pi HAT
 .SH SYNOPSIS
@@ -16,6 +16,11 @@ gsp-keystudio \- record and analyze audio with the Keyestudio ReSpeaker 2-Mic Pi
 .B gsp-keystudio \-\-play
 .RI [ FILE.wav ]
 .br
+.B gsp-keystudio \-\-calibrate
+.I DB
+.RB [ \-\-file
+.IR FILE.wav ]
+.br
 .B gsp-keystudio \-h
 .SH DESCRIPTION
 .B gsp-keystudio
@@ -24,7 +29,10 @@ button-operated recorder.
 Tap the button on the HAT to record 3 seconds and get a frequency and
 volume analysis, or double-tap it to record for as long as you like.
 .PP
-Every recording is saved as a WAV file (16-bit, 16000 Hz, 2 channels) in
+Recording uses the sound chip's highest rate, 48000 samples per second, so
+it captures frequencies up to 24000 Hz.
+Every recording is saved as a WAV file (16-bit, 48000 Hz, 2 channels; about
+11.5 MB per minute) in
 the recordings folder that the installer created, normally
 .IR /home/pranav/recordings .
 .PP
@@ -81,6 +89,19 @@ Press
 .B Ctrl+C
 to stop.
 .TP
+.BI \-\-calibrate " DB"
+Make the volume readings match a sound level meter (a phone app works).
+Hold the meter next to the HAT, make a steady sound (music, a fan, a
+tone), and run
+.B gsp-keystudio \-\-calibrate
+with the meter's dB(A) reading; the program records 3 seconds and saves
+the correction.
+With
+.BI \-\-file " FILE.wav"
+it uses that recording instead of recording a new one.
+Run it once; the correction is kept in
+.IR ~/.config/gsp-keystudio/spl_offset .
+.TP
 .BI \-\-device " DEVICE"
 Use this ALSA device (for example
 .IR plughw:1,0 )
@@ -93,63 +114,80 @@ Show a short help message and exit.
 .SH THE ANALYSIS REPORT
 Each single-tap (or
 .BR \-\-now )
-recording prints a report with exact values, a rating from low to high,
-the rating's level number (for example "level 5 of 7") and value range,
-and a
-.B LOW [####\-\-\-\-] HIGH
-meter with a score from 0 to 100.
+recording is analyzed 200 times per second: every 5 ms the program takes a
+2048-sample FFT (about 43 ms of sound at 48000 Hz) and measures that
+moment's loudness and main frequency.
+That is what lets it follow a sound whose pitch or loudness changes, such
+as a frequency sweep.
 .SS Volume
+Volumes are in dB(A): the same A-weighted decibels a sound level meter or
+phone meter app shows, where about 30 dB is a quiet room, 60 dB normal
+conversation and 85 dB very loud.
+Until you run
+.BR \-\-calibrate ,
+the heading says
+.I estimated
+and the numbers can be off by several dB; after calibrating it says
+.IR calibrated .
 .TP
-.B RMS level
-Average loudness in dBFS (0 dBFS is the loudest the microphones can
-record; quieter sounds are more negative).
+.B Average (whole recording)
+The energy average of the entire recording (what sound meters call Leq).
 .TP
-.B Peak level
-Loudest single moment, in dBFS.
+.B Lowest (quietest 1/8 s)
+The quietest stretch, measured like a sound meter's "fast" setting
+(1/8 second averages), and when it happened.
+In a recording with pauses this is the room's background noise.
 .TP
-.B Estimated SPL
-Rough real-world loudness in dB.
-It is approximate until calibrated against a sound level meter (the
-.B SPL_OFFSET
-setting in the script).
+.B Highest (loudest 1/8 s)
+The loudest stretch, and when it happened.
 .TP
 .B Rating
-From the RMS level:
-SILENT (below \-60 dBFS),
-VERY QUIET (\-60 to \-45),
-QUIET (\-45 to \-35),
-MODERATE (\-35 to \-25),
-LOUD (\-25 to \-15),
-VERY LOUD (\-15 to \-6),
-EXTREME / CLIPPING (\-6 and above).
+From the average:
+SILENT (below 35 dB),
+VERY QUIET (35\-50),
+QUIET (50\-60),
+MODERATE (60\-70),
+LOUD (70\-80),
+VERY LOUD (80\-90),
+EXTREME (90 dB and above),
+plus a
+.B LOW [####\-\-\-\-] HIGH
+meter from 20 to 110 dB.
+.TP
+.B WARNING: ... clipping
+Shown when the sound was too loud for the microphones; the readings are
+then lower than the real level.
 .SS Frequency
+The heading shows the analysis rate, FFT size and sample rate.
+.TP
+.B Lowest freq / Highest freq
+The lowest and highest main frequency heard, and when.
+Every 5 ms frame contributes its strongest frequency, if that frame is
+loud (within 30 dB of the loudest moment), clearly tonal (its peak at
+least 10 dB above the rest of the spectrum) and steady (not straddling a
+sudden start or stop).
+For a sweep these are its start and end frequencies.
+The first and last 21 ms of the recording can't be measured (half a
+2048-sample window), so a sweep that starts right at 0 s reads slightly
+inside its true range.
 .TP
 .B Dominant freq
-The strongest frequency in the recording, in Hz.
+The strongest frequency over the whole recording, accurate to about
+1 Hz for a steady tone.
 .TP
 .B Spectral center
 The "center of mass" of the sound; higher means a brighter sound.
 .TP
 .B Top peaks
-The three strongest frequencies, with each one's strength relative to
-the strongest (+0.0 dB).
+The three strongest frequencies, at least 50 Hz apart, with each one's
+strength relative to the strongest (+0.0 dB).
 .TP
 .B Band energy
 Percent of the sound's energy in Low (20\-250 Hz), Mid (250\-4000 Hz) and
-High (4000 Hz and above).
-.TP
-.B Rating
-From the dominant frequency:
-VERY LOW (below 60 Hz),
-LOW (60\-250),
-MID-LOW (250\-1000),
-MID (1000\-2000),
-MID-HIGH (2000\-4000),
-HIGH (4000\-6000),
-VERY HIGH (6000 Hz and above).
+High (4000 Hz up to half the sample rate).
 .PP
-If the recording is SILENT, the frequency part is skipped because there
-is not enough sound to measure.
+If the recording is too quiet (its loudest moment is below \-75 dB on the
+mics' own scale), the frequency part is skipped.
 .SH LEDS
 The three LEDs on the HAT show what the program is doing:
 .TP
@@ -275,6 +313,11 @@ An existing file is first saved as
 .IR ~/.asoundrc.bak\-gsp .
 Delete it to go back to the Pi's own audio output.
 .TP
+.I ~/.config/gsp-keystudio/spl_offset
+The volume correction saved by
+.BR \-\-calibrate .
+Delete it to go back to estimated volumes.
+.TP
 .I /usr/local/bin/gsp-keystudio
 This command.
 It sets
@@ -302,6 +345,12 @@ The
 command sets it to the folder the installer created; if it is unset,
 .I /home/pranav/recordings
 is used.
+.TP
+.B GSP_CALIBRATION_FILE
+Where
+.B \-\-calibrate
+saves and reads the volume correction (default
+.IR ~/.config/gsp-keystudio/spl_offset ).
 .SH EXIT STATUS
 .TP
 .B 0

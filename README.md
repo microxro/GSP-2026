@@ -11,10 +11,10 @@ After installing, run `man gsp-keystudio` for the full manual: button controls, 
 
 Both kinds go to the recordings folder that the installer creates (`/home/pranav/recordings/`). If you press Ctrl+C during a session, the session is saved before the program exits. A single tap starts about 0.4 s after you let go, because the program waits to see whether a second tap is coming. During a session a single tap does nothing, and a quick third tap after a double-tap is ignored.
 
-The analysis after a single tap reports:
+The 3-second recording is made at 48 kHz (the chip's maximum, hears up to 24 kHz) and analyzed 200 times per second, so it can follow sweeps and changing sounds. The report shows:
 
-- **Volume:** exact RMS and peak level (dBFS) and an estimated dB SPL. You also get a rating from SILENT to EXTREME showing its level (e.g. 5 of 7) and range, plus a LOW→HIGH meter with a 0–100 score.
-- **Frequency:** the exact dominant frequency, the spectral centroid and the top 3 peaks (Hz). Band energy is shown as a % for Low 20–250, Mid 250–4000 and High 4000+ Hz. You also get a rating from VERY LOW to VERY HIGH showing its level and range, plus a meter with a 0–100 score.
+- **Volume** in dB(A), like a sound level meter: the **average** of the whole recording, the **lowest** and **highest** 1/8-second levels (with when they happened), plus a rating and meter. Run `gsp-keystudio --calibrate <dB>` once with a sound meter (a phone app works) next to the HAT to make these exact; until then they're estimates.
+- **Frequency:** the exact **lowest** and **highest** frequency heard (with when), the dominant frequency, spectral centre, the top 3 peaks and the share of energy in the low/mid/high bands.
 - **LEDs:** a red countdown while recording (3 LEDs, then 2, then 1, one per second), blue while analyzing, then green→red to show loudness
 
 ## One-step install (Raspberry Pi)
@@ -43,10 +43,11 @@ gsp-keystudio               # waits for the button: tap = 3 s + analysis, double
 gsp-keystudio --now         # records 3 s right away and analyzes (also saved)
 gsp-keystudio --file x.wav  # analyzes an existing WAV
 gsp-keystudio --play        # plays the newest recording through the HAT
+gsp-keystudio --calibrate 65  # make volumes match a sound meter reading of 65 dB(A)
 ```
 The script detects the sound card automatically; use `--device plughw:N,0` to override it.
 
-The SPL figure is approximate (`SPL_OFFSET` in the script). To get accurate numbers, calibrate it against a sound meter.
+Volumes are estimates until you calibrate once: hold a sound level meter (a phone app is fine) next to the HAT, make a steady sound, and run `gsp-keystudio --calibrate <the meter's dB(A) reading>`.
 
 ## Play back your recordings
 Every recording is saved in the folder the installer made: `/home/pranav/recordings/`.
