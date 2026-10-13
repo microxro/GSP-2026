@@ -189,6 +189,7 @@ else
     warn "User ${TARGET_USER} not found - skipping group setup."
 fi
 RECORDINGS_DIR="${TARGET_HOME}/recordings"
+RESULTS_FILE="${RECORDINGS_DIR}/analysis_results.txt"
 echo "Recordings folder: ${RECORDINGS_DIR}"
 
 # --------------------------------------------------------------------------- #
@@ -200,6 +201,7 @@ cat > "$BIN_PATH" <<EOF
 #!/usr/bin/env bash
 # Runs the ReSpeaker 2-Mic HAT recorder/analyzer. Installed by install.sh.
 export GSP_RECORDINGS_DIR="${RECORDINGS_DIR}"
+export GSP_RESULTS_FILE="${RESULTS_FILE}"
 exec python3 "${INSTALL_DIR}/respeaker_analyzer.py" "\$@"
 EOF
 chmod 755 "$BIN_PATH"
@@ -218,6 +220,12 @@ if [[ "$TARGET_USER_EXISTS" -eq 1 ]]; then
     done
     target_group="$(id -gn "$TARGET_USER")"
     install -d -m 755 -o "$TARGET_USER" -g "$target_group" "$RECORDINGS_DIR"
+    # Every analysis is appended to this file; keep earlier results on a re-run
+    if [[ ! -f "$RESULTS_FILE" ]]; then
+        echo "# gsp-keystudio analysis results - each analysis is added below" > "$RESULTS_FILE"
+    fi
+    chown "$TARGET_USER:$target_group" "$RESULTS_FILE"
+    chmod 644 "$RESULTS_FILE"
 fi
 
 # --------------------------------------------------------------------------- #
@@ -251,6 +259,9 @@ fi
 step "Done"
 echo "Command installed: ${BIN_PATH}"
 echo "Recordings are saved to: ${RECORDINGS_DIR}"
+if [[ -f "$RESULTS_FILE" ]]; then
+    echo "$(basename "$RESULTS_FILE") is installed! Every analysis is added to: ${RESULTS_FILE}"
+fi
 echo "Full manual: man ${CMD_NAME}"
 echo
 echo "Usage (from any folder):"

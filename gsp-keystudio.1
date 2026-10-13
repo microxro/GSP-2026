@@ -35,6 +35,14 @@ Every recording is saved as a WAV file (16-bit, 48000 Hz, 2 channels; about
 11.5 MB per minute) in
 the recordings folder that the installer created, normally
 .IR /home/pranav/recordings .
+Every analysis report (button tap,
+.B \-\-now
+or
+.BR \-\-file )
+is also added to the end of
+.IR /home/pranav/recordings/analysis_results.txt ,
+with the date, time and the analyzed file, so you keep a history of all
+your results.
 .PP
 With no options, the program waits for button taps until you press
 .BR Ctrl+C .
@@ -300,7 +308,9 @@ skips this step.
 .IP \(bu 2
 Adds your user to the audio, gpio, spi and i2c groups.
 .IP \(bu 2
-Creates the recordings folder.
+Creates the recordings folder and the results file
+.I analysis_results.txt
+in it (an existing results file is kept).
 .IP \(bu 2
 Makes the HAT the default sound device for your user, so sound plays
 through the HAT's headphone jack.
@@ -325,6 +335,14 @@ The recordings folder, created by the installer.
 .TP
 .I session_YYYYmmdd_HHMMSS_mmm.wav
 Double-tap recordings.
+.TP
+.I analysis_results.txt
+Created by the installer.
+Every analysis is added to the end of it, under a
+.B ###
+line with the date, time and the analyzed file.
+View it with
+.BR "less ~/recordings/analysis_results.txt" .
 .RE
 .TP
 .I ~/.asoundrc
@@ -343,6 +361,8 @@ Delete it to go back to estimated volumes.
 This command.
 It sets
 .B GSP_RECORDINGS_DIR
+and
+.B GSP_RESULTS_FILE
 and runs the program.
 .TP
 .I /opt/gsp-keystudio/respeaker_analyzer.py
@@ -366,6 +386,14 @@ The
 command sets it to the folder the installer created; if it is unset,
 .I /home/pranav/recordings
 is used.
+.TP
+.B GSP_RESULTS_FILE
+File that every analysis is added to.
+The
+.B gsp-keystudio
+command sets it to the file the installer created; if it is unset,
+.I analysis_results.txt
+in the recordings folder is used.
 .TP
 .B GSP_CALIBRATION_FILE
 Where
