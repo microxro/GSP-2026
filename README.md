@@ -15,6 +15,7 @@ The 3-second recording is made at 48 kHz (the chip's maximum, hears up to 24 kHz
 
 - **Volume** in dB(A), like a sound level meter: the **average** of the whole recording, the **lowest** and **highest** 1/8-second levels (with when they happened), plus a rating and meter. Without calibration the program estimates real decibels from the sound chip's current gain settings and the typical sensitivity of this kind of mic (usually within about 5 dB). For exact readings, run `gsp-keystudio --calibrate <dB>` once with a sound meter (a phone app works) next to the HAT.
 - **Frequency:** the exact **lowest** and **highest** frequency heard (with when), the dominant frequency, spectral centre, the top 3 peaks and the share of energy in the low/mid/high bands.
+- **Results history:** every analysis is also added to the end of `/home/pranav/recordings/analysis_results.txt` (with the date, time and file), so earlier results are never lost. View it with `less ~/recordings/analysis_results.txt`.
 - **LEDs:** a red countdown while recording (3 LEDs, then 2, then 1, one per second), blue while analyzing, then green→red to show loudness
 
 ## One-step install (Raspberry Pi)
@@ -32,6 +33,7 @@ The installer:
 - turns on the headphone output and microphones once the card appears (log: `/var/log/gsp-audio-levels.log`)
 - adds your user to the audio/gpio/spi/i2c groups
 - creates the recordings folder (`/home/pranav/recordings/`) and points the command at it
+- creates the results file `analysis_results.txt` in that folder, which every analysis is added to (it is kept when you reinstall)
 - makes the HAT the default sound device, so playback goes to the HAT's headphone jack
 - creates the `gsp-keystudio` command and its manual page (`man gsp-keystudio`)
 

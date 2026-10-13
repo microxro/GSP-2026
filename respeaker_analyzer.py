@@ -46,6 +46,9 @@ CHANNELS = 2
 # Where every recording is saved. The installed gsp-keystudio wrapper exports
 # GSP_RECORDINGS_DIR (the folder the installer created).
 SAVE_DIR = os.environ.get("GSP_RECORDINGS_DIR") or "/home/pranav/recordings"
+# Every analysis report is appended here (the installer creates this file).
+RESULTS_FILE = (os.environ.get("GSP_RESULTS_FILE")
+                or os.path.join(SAVE_DIR, "analysis_results.txt"))
 DOUBLE_TAP_WINDOW = 0.4    # s: a 2nd press this soon after a release = double tap
 DEBOUNCE = 0.03            # s: a level change must still be there this much later
 POLL_INTERVAL = 0.02       # s: button polling period
@@ -544,36 +547,55 @@ def meter(fraction, width=30):
 
 
 def report(r):
+    """Print the analysis and return it as text."""
+    lines = []
+    out = lines.append
     vol_frac = (r["avg_spl"] - 20) / 90            # meter: 20 dB (silence) .. 110 dB
     nyquist = r["rate"] / 2
 
-    print("\n" + "=" * 64)
-    print(" VOLUME  (dB(A) sound level, like a sound meter)")
-    print(f"   Accuracy                 : {r['level_source']}")
-    print(f"   Average (whole recording): {r['avg_spl']:6.1f} dB")
-    print(f"   Lowest  (quietest 1/8 s) : {r['min_spl']:6.1f} dB   at {r['min_t']:.2f} s")
-    print(f"   Highest (loudest 1/8 s)  : {r['max_spl']:6.1f} dB   at {r['max_t']:.2f} s")
-    print(f"   Rating                   : {r['vol_label']}  (level {r['vol_idx'] + 1} of "
-          f"{len(VOLUME_LEVELS)}, {level_range(r['vol_idx'], VOLUME_LEVELS, 'dB')})")
-    print(f"   {meter(vol_frac)}  {r['avg_spl']:.1f} dB")
+    out("\n" + "=" * 64)
+    out(" VOLUME  (dB(A) sound level, like a sound meter)")
+    out(f"   Accuracy                 : {r['level_source']}")
+    out(f"   Average (whole recording): {r['avg_spl']:6.1f} dB")
+    out(f"   Lowest  (quietest 1/8 s) : {r['min_spl']:6.1f} dB   at {r['min_t']:.2f} s")
+    out(f"   Highest (loudest 1/8 s)  : {r['max_spl']:6.1f} dB   at {r['max_t']:.2f} s")
+    out(f"   Rating                   : {r['vol_label']}  (level {r['vol_idx'] + 1} of "
+        f"{len(VOLUME_LEVELS)}, {level_range(r['vol_idx'], VOLUME_LEVELS, 'dB')})")
+    out(f"   {meter(vol_frac)}  {r['avg_spl']:.1f} dB")
     if r["clipping"]:
-        print("   WARNING: the sound was too loud for the mics (clipping) - readings are low.")
-    print(f" FREQUENCY  ({r['frame_rate']:.0f} analyses/s, {r['fft_size']}-point FFT, "
-          f"{r['rate']} Hz sample rate)")
+        out("   WARNING: the sound was too loud for the mics (clipping) - readings are low.")
+    out(f" FREQUENCY  ({r['frame_rate']:.0f} analyses/s, {r['fft_size']}-point FFT, "
+        f"{r['rate']} Hz sample rate)")
     if r["silent"]:
-        print("   Too quiet to measure frequency reliably.")
+        out("   Too quiet to measure frequency reliably.")
     else:
-        print(f"   Lowest freq    : {r['low_freq']:8.1f} Hz   at {r['low_t']:.2f} s")
-        print(f"   Highest freq   : {r['high_freq']:8.1f} Hz   at {r['high_t']:.2f} s")
-        print(f"   Dominant freq  : {r['dominant']:8.1f} Hz")
-        print(f"   Spectral center: {r['centroid']:8.1f} Hz")
-        print("   Top peaks      : " +
-              ", ".join(f"{f:.1f} Hz ({db:+.1f} dB)" for f, db in r["peaks"]))
-        print("   Band energy    :")
+        out(f"   Lowest freq    : {r['low_freq']:8.1f} Hz   at {r['low_t']:.2f} s")
+        out(f"   Highest freq   : {r['high_freq']:8.1f} Hz   at {r['high_t']:.2f} s")
+        out(f"   Dominant freq  : {r['dominant']:8.1f} Hz")
+        out(f"   Spectral center: {r['centroid']:8.1f} Hz")
+        out("   Top peaks      : " +
+            ", ".join(f"{f:.1f} Hz ({db:+.1f} dB)" for f, db in r["peaks"]))
+        out("   Band energy    :")
         for name, lo, hi in BANDS:
             hi = min(hi, nyquist)
-            print(f"     {name:<5}({lo:>5}-{hi:<5g} Hz): {r['bands'][name]:5.1f}%")
-    print("=" * 64)
+            out(f"     {name:<5}({lo:>5}-{hi:<5g} Hz): {r['bands'][name]:5.1f}%")
+    out("=" * 64)
+    text = "\n".join(lines)
+    print(text)
+    return text
+
+
+def save_results(text, source):
+    """Append a report to RESULTS_FILE with the time and the analyzed file."""
+    stamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    try:
+        os.makedirs(os.path.dirname(RESULTS_FILE) or ".", exist_ok=True)
+        with open(RESULTS_FILE, "a") as f:
+            f.write(f"\n### {stamp}  {source}{text}\n")
+    except OSError as e:
+        print(f"Could not add the results to {RESULTS_FILE}: {e}")
+        return
+    print(f"Results added to: {RESULTS_FILE}")
 
 
 def volume_color(idx):
@@ -608,9 +630,10 @@ def capture_and_analyze(device, leds):
     leds.show((0, 0, 255))                         # blue = analyzing
     samples, rate = load_wav(path)
     result = analyze(samples, rate)
-    report(result)
+    text = report(result)
     leds.show(volume_color(result["vol_idx"]))
     print(f"Saved: {path}")
+    save_results(text, path)
     return result
 
 
@@ -855,7 +878,7 @@ def main():
             return
 
         if args.file:
-            report(analyze(*load_wav(args.file)))
+            save_results(report(analyze(*load_wav(args.file))), os.path.abspath(args.file))
             return
 
         device = args.device or find_card()
